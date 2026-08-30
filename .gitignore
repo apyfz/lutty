@@ -4,3 +4,5 @@ build/
 *.iml
 .idea/
 .DS_Store
+docs/
+tools/OPPO_O-Log_WhitePaper_extract.txt
