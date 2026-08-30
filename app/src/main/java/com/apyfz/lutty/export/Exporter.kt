@@ -133,32 +133,47 @@ class Exporter(private val context: Context) {
         else -> e.message ?: "Export failed (${ExportException.getErrorCodeName(e.errorCode)})"
     }
 
-    private fun publish(source: File): Uri? = try {
-        val values = ContentValues().apply {
-            put(MediaStore.Video.Media.DISPLAY_NAME, "Lutty_${System.currentTimeMillis()}.mp4")
-            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-            put(
-                MediaStore.Video.Media.RELATIVE_PATH,
-                "${Environment.DIRECTORY_MOVIES}/$ALBUM",
-            )
-            put(MediaStore.Video.Media.IS_PENDING, 1)
-        }
-        val resolver = context.contentResolver
-        val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-        if (uri == null) {
-            Log.e(TAG, "MediaStore insert returned null")
+    private fun publish(source: File): Uri? {
+        return try {
+            val values = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, "Lutty_${System.currentTimeMillis()}.mp4")
+                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                put(
+                    MediaStore.Video.Media.RELATIVE_PATH,
+                    "${Environment.DIRECTORY_MOVIES}/$ALBUM",
+                )
+                put(MediaStore.Video.Media.IS_PENDING, 1)
+            }
+            val resolver = context.contentResolver
+            val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+            if (uri == null) {
+                Log.e(TAG, "MediaStore insert returned null")
+                null
+            } else {
+                val stream = resolver.openOutputStream(uri)
+                if (stream == null) {
+                    // The row exists but nothing can be written to it. Finalising here would leave an
+                    // empty entry in the gallery and report success, so remove it and fail instead.
+                    Log.e(TAG, "openOutputStream returned null, removing the pending entry")
+                    resolver.delete(uri, null, null)
+                    return null
+                }
+                val copied = stream.use { out -> source.inputStream().use { it.copyTo(out) } }
+                if (copied != source.length()) {
+                    Log.e(TAG, "copied $copied of ${source.length()} bytes, removing the entry")
+                    resolver.delete(uri, null, null)
+                    return null
+                }
+                values.clear()
+                values.put(MediaStore.Video.Media.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+                Log.i(TAG, "published $copied bytes to $uri")
+                uri
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "could not publish to gallery", e)
             null
-        } else {
-            resolver.openOutputStream(uri)?.use { out -> source.inputStream().use { it.copyTo(out) } }
-            values.clear()
-            values.put(MediaStore.Video.Media.IS_PENDING, 0)
-            resolver.update(uri, values, null, null)
-            Log.i(TAG, "published to $uri")
-            uri
         }
-    } catch (e: Exception) {
-        Log.e(TAG, "could not publish to gallery", e)
-        null
     }
 
     fun progressPercent(): Int {
