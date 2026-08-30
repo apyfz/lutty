@@ -170,7 +170,12 @@ class Exporter(private val context: Context) {
 
             values.clear()
             values.put(MediaStore.Video.Media.IS_PENDING, 0)
-            resolver.update(uri, values, null, null)
+            if (resolver.update(uri, values, null, null) == 0) {
+                // The row was not finalised, so it stays invisible to the gallery. Reporting
+                // success here would delete the only usable copy.
+                Log.e(TAG, "clearing IS_PENDING updated no rows")
+                return null
+            }
             pending = null      // finalised, so the cleanup below must leave it alone
             Log.i(TAG, "published $copied bytes to $uri")
             uri

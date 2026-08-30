@@ -40,9 +40,10 @@ object GradePipeline {
         // 5. LUT stack, in order, blended by strength
         luts.forEachIndexed { i, lut ->
             val strength = grade.luts.getOrNull(i)?.strength ?: 1f
-            val out = lut.sample(
-                p[0].coerceIn(0f, 1f), p[1].coerceIn(0f, 1f), p[2].coerceIn(0f, 1f),
-            )
+            // Passed raw: LutData.sample normalises by the declared domain and clamps after,
+            // which is what the shader does. Clamping to 0-1 first would mean a LUT with
+            // DOMAIN_MAX above 1 resolved highlights differently on CPU and GPU.
+            val out = lut.sample(p[0], p[1], p[2])
             p = FloatArray(3) { p[it] + (out[it] - p[it]) * strength }
         }
 

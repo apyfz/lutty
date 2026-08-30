@@ -70,6 +70,20 @@ class GradePipelineTest {
         assertEquals(out[0], out[1], 1e-6f); assertEquals(out[1], out[2], 1e-6f)
     }
 
+    @Test fun `a domain above one resolves highlights without being clamped first`() {
+        // The shader normalises the raw value then clamps; the CPU must not clamp beforehand, or
+        // a LUT declaring DOMAIN_MAX above 1 would grade highlights differently in the preview.
+        val n = 2
+        val rgb = FloatArray(n * n * n * 3)
+        var i = 0
+        for (b in 0 until n) for (g in 0 until n) for (r in 0 until n) {
+            rgb[i++] = r.toFloat(); rgb[i++] = g.toFloat(); rgb[i++] = b.toFloat()
+        }
+        val lut = LutData(n, rgb, domainMax = floatArrayOf(2f, 2f, 2f))
+        // 1.5 sits three quarters up a 0..2 domain, not at the top as a pre-clamp would make it.
+        assertEquals(0.75f, lut.sample(1.5f, 1.5f, 1.5f)[0], 1e-5f)
+    }
+
     @Test fun `gamut conversion runs only into apple log 2`() {
         // Apple Log 2 is the only profile on Apple Wide Gamut and is always the target, so the
         // matrix must apply going in and never coming back out.
