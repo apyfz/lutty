@@ -100,6 +100,26 @@ vec3 encodeFromLinear(vec3 l, int profile) {
 // Sample a 3D LUT with correct texel-centre offsets so the endpoints land exactly.
 // The domain is applied here so the GPU matches the CPU path, which normalises the same way;
 // without it a LUT declaring DOMAIN_MIN/MAX would grade differently from its own swatch.
+// Uniform noise in 0-1 from the pixel position. Cheap, and stable per pixel so a still frame
+// does not shimmer.
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+// Triangular probability dither at one least significant bit of the 8-bit output.
+//
+// The framebuffer is 8-bit, so a near-flat gradient such as a sky only has a handful of levels
+// across it and quantises into visible contours. Adding sub-LSB noise before that quantisation
+// converts the steps into noise fine enough not to resolve, which is why it looks smooth even
+// though no precision has been gained.
+vec3 dither(vec3 c, vec2 fragCoord) {
+  float n1 = hash12(fragCoord);
+  float n2 = hash12(fragCoord + vec2(17.31, 91.7));
+  return c + vec3((n1 - n2) / 255.0);
+}
+
 vec3 sampleLut(sampler3D lut, vec3 c, float n, vec3 dMin, vec3 dMax) {
   vec3 norm = clamp((c - dMin) / max(dMax - dMin, vec3(1e-6)), 0.0, 1.0);
   vec3 uvw = (norm * (n - 1.0) + 0.5) / n;
@@ -110,6 +130,7 @@ void main() {
   vec3 c = texture(uTexSampler, vTexSamplingCoord).rgb;
 
   if (uBypass == 1) { outColor = vec4(c, 1.0); return; }
+
 
   // 1. to scene linear, so exposure and white balance behave photographically
   vec3 lin = decodeToLinear(c, uInputProfile);
@@ -133,7 +154,7 @@ void main() {
   float luma = dot(p, vec3(0.2126, 0.7152, 0.0722));
   p = mix(vec3(luma), p, uSaturation);
 
-  outColor = vec4(clamp(p, 0.0, 1.0), 1.0);
+  outColor = vec4(clamp(dither(p, gl_FragCoord.xy), 0.0, 1.0), 1.0);
 }
 """
 
@@ -197,6 +218,9 @@ class GradeShaderProgram(
         val grade = controller.grade
         try {
             glProgram.use()
+            // GLES enables GL_DITHER by default. Its ordered pattern is a regular grid, which is
+            // far more visible than the noise dither applied in the shader.
+            GLES20.glDisable(GLES20.GL_DITHER)
             syncTextures()
             glProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
 

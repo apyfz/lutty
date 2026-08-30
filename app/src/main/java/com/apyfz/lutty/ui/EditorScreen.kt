@@ -76,7 +76,10 @@ fun EditorScreen(vm: EditorViewModel) {
     DisposableEffect(Unit) { onDispose { player.release() } }
 
     LaunchedEffect(Unit) {
-        player.setVideoEffects(listOf(Presentation.createForHeight(1080), GradeEffect(vm.controller)))
+        // No Presentation here on purpose. Downscaling 2160x3840 to 1080 height is a 3.56x
+        // non-integer resample, and the display scales the result back up, which puts regular
+        // moiré into near-flat areas such as sky. The GPU handles full resolution comfortably.
+        player.setVideoEffects(listOf(GradeEffect(vm.controller)))
     }
     LaunchedEffect(vm.videoUri) {
         vm.videoUri?.let {
