@@ -37,9 +37,13 @@ uniform sampler3D uLut1;
 uniform int   uLut0Enabled;
 uniform float uLut0Strength;
 uniform float uLut0Size;
+uniform vec3  uLut0DomainMin;
+uniform vec3  uLut0DomainMax;
 uniform int   uLut1Enabled;
 uniform float uLut1Strength;
 uniform float uLut1Size;
+uniform vec3  uLut1DomainMin;
+uniform vec3  uLut1DomainMax;
 
 uniform int  uInputProfile;   // 0 passthrough, 1 O-Log, 2 Apple Log, 3 Apple Log 2
 uniform int  uTargetProfile;
@@ -94,8 +98,11 @@ vec3 encodeFromLinear(vec3 l, int profile) {
 }
 
 // Sample a 3D LUT with correct texel-centre offsets so the endpoints land exactly.
-vec3 sampleLut(sampler3D lut, vec3 c, float n) {
-  vec3 uvw = (clamp(c, 0.0, 1.0) * (n - 1.0) + 0.5) / n;
+// The domain is applied here so the GPU matches the CPU path, which normalises the same way;
+// without it a LUT declaring DOMAIN_MIN/MAX would grade differently from its own swatch.
+vec3 sampleLut(sampler3D lut, vec3 c, float n, vec3 dMin, vec3 dMax) {
+  vec3 norm = clamp((c - dMin) / max(dMax - dMin, vec3(1e-6)), 0.0, 1.0);
+  vec3 uvw = (norm * (n - 1.0) + 0.5) / n;
   return texture(lut, uvw).rgb;
 }
 
@@ -118,8 +125,8 @@ void main() {
   vec3 p = encodeFromLinear(lin, uTargetProfile);
 
   // 5. LUT stack, in order, each blended by its own strength
-  if (uLut0Enabled == 1) p = mix(p, sampleLut(uLut0, p, uLut0Size), uLut0Strength);
-  if (uLut1Enabled == 1) p = mix(p, sampleLut(uLut1, p, uLut1Size), uLut1Strength);
+  if (uLut0Enabled == 1) p = mix(p, sampleLut(uLut0, p, uLut0Size, uLut0DomainMin, uLut0DomainMax), uLut0Strength);
+  if (uLut1Enabled == 1) p = mix(p, sampleLut(uLut1, p, uLut1Size, uLut1DomainMin, uLut1DomainMax), uLut1Strength);
 
   // 6. contrast and saturation, in the output space where they behave as expected
   p = (p - 0.5) * uContrast + 0.5;
@@ -193,8 +200,8 @@ class GradeShaderProgram(
             syncTextures()
             glProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
 
-            bindLut(grade, 0, "uLut0", "uLut0Enabled", "uLut0Strength", "uLut0Size", 1)
-            bindLut(grade, 1, "uLut1", "uLut1Enabled", "uLut1Strength", "uLut1Size", 2)
+            bindLut(grade, 0, "uLut0", 1)
+            bindLut(grade, 1, "uLut1", 2)
 
             glProgram.setIntUniform("uInputProfile", grade.input.shaderId)
             glProgram.setIntUniform("uTargetProfile", grade.target.shaderId)
@@ -216,10 +223,13 @@ class GradeShaderProgram(
         }
     }
 
-    private fun bindLut(
-        grade: GradeState, index: Int,
-        sampler: String, enabled: String, strength: String, size: String, texUnit: Int,
-    ) {
+    private fun bindLut(grade: GradeState, index: Int, sampler: String, texUnit: Int) {
+        val enabled = "${sampler}Enabled"
+        val strength = "${sampler}Strength"
+        val size = "${sampler}Size"
+        val dMin = "${sampler}DomainMin"
+        val dMax = "${sampler}DomainMax"
+
         val tex = textures.getOrNull(index)
         if (tex == null) {
             val fill = placeholder ?: textures.firstOrNull() ?: return
@@ -227,12 +237,16 @@ class GradeShaderProgram(
             glProgram.setIntUniform(enabled, 0)
             glProgram.setFloatUniform(strength, 0f)
             glProgram.setFloatUniform(size, fill.size.toFloat())
+            glProgram.setFloatsUniform(dMin, floatArrayOf(0f, 0f, 0f))
+            glProgram.setFloatsUniform(dMax, floatArrayOf(1f, 1f, 1f))
             return
         }
         glProgram.setSamplerTexIdUniform(sampler, tex.textureId, texUnit, GLES30.GL_TEXTURE_3D)
         glProgram.setIntUniform(enabled, 1)
         glProgram.setFloatUniform(strength, grade.luts.getOrNull(index)?.strength ?: 1f)
         glProgram.setFloatUniform(size, tex.size.toFloat())
+        glProgram.setFloatsUniform(dMin, tex.domainMin)
+        glProgram.setFloatsUniform(dMax, tex.domainMax)
     }
 
     override fun release() {

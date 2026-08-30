@@ -102,6 +102,18 @@ class CubeParserTest {
         assertTrue(err("LUT_3D_SIZE 1\n0 0 0").message.contains("out of range"))
     }
 
+    @Test fun `rejects a size large enough to exhaust memory before reading any data`() {
+        // The size is declared up front, so an oversized header would allocate hundreds of
+        // megabytes before a single data row is validated.
+        val r = err("LUT_3D_SIZE 256\n")
+        assertTrue(r.message, r.message.contains("out of range"))
+    }
+
+    @Test fun `accepts the largest size real LUTs use`() {
+        val lut = ok(identityText(65))
+        assertEquals(65, lut.size)
+    }
+
     @Test fun `rejects inverted domain`() {
         val text = "LUT_3D_SIZE 2\nDOMAIN_MIN 1.0 1.0 1.0\nDOMAIN_MAX 0.0 0.0 0.0\n" +
             (0 until 8).joinToString("\n") { "0.0 0.0 0.0" }

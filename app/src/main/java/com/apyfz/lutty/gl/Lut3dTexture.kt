@@ -15,7 +15,14 @@ import java.nio.FloatBuffer
  * SingleColorLut, which quantises to 8 bits per channel. Falls back to RGBA8 if the device
  * refuses to filter half-float 3D textures.
  */
-class Lut3dTexture private constructor(val textureId: Int, val size: Int, val isHighPrecision: Boolean) {
+class Lut3dTexture private constructor(
+    val textureId: Int,
+    val size: Int,
+    val isHighPrecision: Boolean,
+    /** Carried through so the shader can normalise inputs exactly as the CPU path does. */
+    val domainMin: FloatArray,
+    val domainMax: FloatArray,
+) {
 
     fun release() {
         val ids = intArrayOf(textureId)
@@ -86,7 +93,7 @@ class Lut3dTexture private constructor(val textureId: Int, val size: Int, val is
                 }
             }
             Log.i(TAG, "uploaded ${n}^3 LUT as 3D texture id=$id highPrecision=$highPrecision")
-            return Lut3dTexture(id, n, highPrecision)
+            return Lut3dTexture(id, n, highPrecision, lut.domainMin.copyOf(), lut.domainMax.copyOf())
         }
     }
 }

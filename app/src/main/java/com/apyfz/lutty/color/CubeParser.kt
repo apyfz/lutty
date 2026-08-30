@@ -19,6 +19,13 @@ sealed interface CubeResult {
  */
 object CubeParser {
 
+    /**
+     * The .cube spec allows sizes up to 256, but a 256-cube is 192 MiB of floats and the size is
+     * declared before any data is read, so an oversized header alone would exhaust memory. Real
+     * LUTs top out at 65; this leaves generous headroom while keeping the worst case at ~26 MiB.
+     */
+    const val MAX_SIZE = 129
+
     fun parse(stream: InputStream): CubeResult =
         stream.bufferedReader().use { parse(it) }
 
@@ -52,7 +59,9 @@ object CubeParser {
                     oneDimensional = upper.startsWith("LUT_1D_SIZE")
                     val n = line.split(Regex("\\s+")).getOrNull(1)?.toIntOrNull()
                         ?: return CubeResult.Error("malformed LUT size", lineNo)
-                    if (n < 2 || n > 256) return CubeResult.Error("LUT size $n out of range 2..256", lineNo)
+                    if (n < 2 || n > MAX_SIZE) {
+                        return CubeResult.Error("LUT size $n out of range 2..$MAX_SIZE", lineNo)
+                    }
                     size = n
                     val count = if (oneDimensional) n else n * n * n
                     data = FloatArray(count * 3)

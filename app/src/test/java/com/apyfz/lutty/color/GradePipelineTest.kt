@@ -6,6 +6,7 @@ import com.apyfz.lutty.model.Profile
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Locale
 
 /**
  * The CPU pipeline drives LUT thumbnails and the baked .cube export, so it has to agree with the
@@ -67,6 +68,43 @@ class GradePipelineTest {
         val grade = neutral.copy(saturation = 0f)
         val out = GradePipeline.apply(grade, emptyList(), floatArrayOf(0.9f, 0.2f, 0.4f))
         assertEquals(out[0], out[1], 1e-6f); assertEquals(out[1], out[2], 1e-6f)
+    }
+
+    @Test fun `baked cube uses a dot decimal separator whatever the device locale`() {
+        val original = Locale.getDefault()
+        try {
+            // Germany formats 0.5 as "0,5", which every .cube parser rejects.
+            Locale.setDefault(Locale.GERMANY)
+            val text = GradePipeline.bakeToCube(neutral, emptyList(), 3, "locale")
+            assertTrue("comma separator leaked into the cube", !text.contains(","))
+            assertTrue("expected dot separated values", text.contains("0.5"))
+            // And it must survive a round trip through our own parser.
+            assertTrue(CubeParser.parse(text) is CubeResult.Ok)
+        } finally {
+            Locale.setDefault(original)
+        }
+    }
+
+    @Test fun `domain bounds remap the input before the lookup`() {
+        // A LUT declaring DOMAIN 0..2 must treat 2.0 as its top entry, not 1.0. The shader
+        // applies the same normalisation, so preview and swatch agree.
+        val n = 2
+        val rgb = FloatArray(n * n * n * 3)
+        var i = 0
+        for (b in 0 until n) for (g in 0 until n) for (r in 0 until n) {
+            rgb[i++] = r.toFloat(); rgb[i++] = g.toFloat(); rgb[i++] = b.toFloat()
+        }
+        val lut = LutData(
+            n, rgb,
+            domainMin = floatArrayOf(0f, 0f, 0f),
+            domainMax = floatArrayOf(2f, 2f, 2f),
+        )
+        // Half way up the domain is 1.0, which should land mid-way between the two entries.
+        val mid = lut.sample(1f, 1f, 1f)
+        assertEquals(0.5f, mid[0], 1e-5f)
+        // The top of the domain is 2.0, not 1.0.
+        val top = lut.sample(2f, 2f, 2f)
+        assertEquals(1.0f, top[0], 1e-5f)
     }
 
     @Test fun `baked cube is a well formed identity when the grade is neutral`() {

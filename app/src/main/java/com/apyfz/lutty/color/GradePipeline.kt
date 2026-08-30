@@ -2,6 +2,7 @@ package com.apyfz.lutty.color
 
 import com.apyfz.lutty.model.GradeState
 import com.apyfz.lutty.model.Profile
+import java.util.Locale
 import kotlin.math.pow
 
 /**
@@ -81,5 +82,7 @@ object GradePipeline {
         return sb.toString()
     }
 
-    private fun fmt(v: Float): String = String.format("%.6f", v)
+    // Locale.US, not the default: a comma decimal separator produces "0,500000", which every
+    // .cube parser rejects, including this app's own.
+    private fun fmt(v: Float): String = String.format(Locale.US, "%.6f", v)
 }
