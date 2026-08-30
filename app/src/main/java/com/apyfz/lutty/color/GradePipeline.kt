@@ -23,7 +23,9 @@ object GradePipeline {
         val wb = grade.whiteBalanceGain()
         lin = FloatArray(3) { lin[it] * gain * wb[it] }
 
-        // 3. gamut, only when the target uses different primaries
+        // 3. gamut. Only Apple Log 2 uses Apple Wide Gamut; everything else here is on BT.2020
+        // primaries. Apple Log 2 is always the conversion target, so the reverse direction is
+        // deliberately not implemented.
         if (grade.input != Profile.APPLE_LOG_2 && grade.target == Profile.APPLE_LOG_2) {
             val m = ColorProfiles.BT2020_TO_APPLE_WIDE_GAMUT
             val r = m[0] * lin[0] + m[1] * lin[1] + m[2] * lin[2]

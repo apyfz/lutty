@@ -201,8 +201,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Parameter-only change: no GL work, no texture upload. */
     private fun apply(newGrade: GradeState) {
+        // Swatches are drawn in the target encoding, so they go stale when it changes. Slider
+        // moves must not trigger this: rebuilding the whole library on every frame would stall.
+        val targetChanged = newGrade.targetProfile != grade.targetProfile
         grade = newGrade
         controller.updateGrade(newGrade)
+        if (targetChanged) refreshThumbnails()
     }
 
     /** LUT set changed, so textures must be rebuilt. */
@@ -269,7 +273,13 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         presets = presetStore.list()
     }
 
-    fun applyPreset(preset: Preset) { applyWithLuts(preset.grade) }
+    /**
+     * Applies a saved look. The clip's own input profile is kept: it describes the footage in
+     * front of you, not the preset, and it was detected from this clip.
+     */
+    fun applyPreset(preset: Preset) {
+        applyWithLuts(preset.grade.copy(inputProfile = grade.inputProfile))
+    }
 
     fun deletePreset(name: String) {
         presetStore.delete(name)

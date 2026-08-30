@@ -45,7 +45,9 @@ fun SlimSlider(
             .fillMaxWidth()
             .height(28.dp)
             .pointerInput(range) {
-                detectTapGestures(onTap = { emit(it.x) })
+                // onChangeFinished also fires here: a tap is a complete interaction, and callers
+                // use it to clear drag state. Without it a tap-to-seek would leave that state set.
+                detectTapGestures(onTap = { emit(it.x); onChangeFinished?.invoke() })
             }
             .pointerInput(range) {
                 detectHorizontalDragGestures(

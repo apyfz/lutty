@@ -89,9 +89,21 @@ class Exporter(private val context: Context) {
                     val ms = (System.nanoTime() - startNs) / 1_000_000
                     Log.i(TAG, "export ok ${result.width}x${result.height} in ${ms}ms, ${staging.length()} bytes")
                     val uri = publish(staging)
-                    staging.delete()
                     transformer = null
-                    onProgress(Progress.Done(uri, ms, result.fileSizeBytes))
+                    if (uri == null) {
+                        // The graded file exists but is not in the gallery. Keep it rather than
+                        // deleting the only copy, and say where it is.
+                        Log.e(TAG, "publish failed, keeping ${staging.absolutePath}")
+                        onProgress(
+                            Progress.Failed(
+                                "The clip was graded but could not be added to the gallery. " +
+                                    "It is saved at ${staging.absolutePath}"
+                            )
+                        )
+                    } else {
+                        staging.delete()
+                        onProgress(Progress.Done(uri, ms, result.fileSizeBytes))
+                    }
                 }
 
                 override fun onError(composition: Composition, result: ExportResult, e: ExportException) {

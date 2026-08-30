@@ -70,6 +70,27 @@ class GradePipelineTest {
         assertEquals(out[0], out[1], 1e-6f); assertEquals(out[1], out[2], 1e-6f)
     }
 
+    @Test fun `gamut conversion runs only into apple log 2`() {
+        // Apple Log 2 is the only profile on Apple Wide Gamut and is always the target, so the
+        // matrix must apply going in and never coming back out.
+        val grey = ColorProfiles.oLogEncode(0.18).toFloat()
+        val into = GradePipeline.apply(
+            neutral.copy(inputProfile = Profile.O_LOG.name, targetProfile = Profile.APPLE_LOG_2.name),
+            emptyList(), floatArrayOf(grey, grey, grey),
+        )
+        // Neutral in, neutral out: the matrix preserves greys.
+        assertEquals(into[0], into[1], 1e-5f)
+
+        // Same profile on both sides is a straight round trip, no matrix.
+        val same = GradePipeline.apply(
+            neutral.copy(inputProfile = Profile.APPLE_LOG_2.name, targetProfile = Profile.APPLE_LOG_2.name),
+            emptyList(), floatArrayOf(0.5f, 0.4f, 0.3f),
+        )
+        assertEquals(0.5f, same[0], 1e-4f)
+        assertEquals(0.4f, same[1], 1e-4f)
+        assertEquals(0.3f, same[2], 1e-4f)
+    }
+
     @Test fun `baked cube uses a dot decimal separator whatever the device locale`() {
         val original = Locale.getDefault()
         try {
