@@ -22,6 +22,8 @@ import com.apyfz.lutty.color.GradePipeline
 import com.apyfz.lutty.media.LutSwatch
 import com.apyfz.lutty.media.ProfileDetector
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.lifecycle.viewModelScope
@@ -67,6 +69,13 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
      */
     var targetSlot by mutableStateOf(0); private set
 
+    /**
+     * The rebuild in flight, if any. Opening a clip starts one at the old profile and detection
+     * starts another moments later; without cancelling, the slower job could finish last and put
+     * the stale encoding back on screen.
+     */
+    private var thumbnailJob: Job? = null
+
     /** One tile per library LUT, rendered on a fixed synthetic chart. */
     var thumbnails by mutableStateOf<Map<String, Bitmap>>(emptyMap()); private set
     var baseThumb by mutableStateOf<Bitmap?>(null); private set
@@ -102,7 +111,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
      * are comparable between LUTs and exist before any clip is loaded.
      */
     fun refreshThumbnails(regrabFrame: Boolean = false) {
-        viewModelScope.launch {
+        thumbnailJob?.cancel()
+        thumbnailJob = viewModelScope.launch {
             val tiles = withContext(Dispatchers.Default) {
                 val target = grade.target
                 val stack = resolvedLuts().take(targetSlot)
@@ -113,6 +123,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 }.toMap()
                 base to map
             }
+            // A newer rebuild may have started while this one was rendering.
+            ensureActive()
             baseThumb = tiles.first
             thumbnails = tiles.second
         }
