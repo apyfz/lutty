@@ -353,6 +353,15 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun applyLutToSlot(entry: LutEntry) {
         val slot = LutSlot(entry.id, entry.name, 1f)
         val list = grade.luts.toMutableList()
+        val base = list.getOrNull(0)
+        // A stack shares one conversion target, so it cannot mix categories — a LOG and a Processed
+        // LUT need different encodings. Stacking a mismatched LUT instead starts a fresh single-LUT
+        // grade, so one LUT is never fed the wrong space.
+        if (targetSlot >= 1 && base != null && library.categoryOf(base.lutId) != entry.category) {
+            targetSlot = 0
+            applyLuts(listOf(slot))
+            return
+        }
         if (targetSlot < list.size) list[targetSlot] = slot else list.add(slot)
         applyLuts(list)
     }
@@ -442,13 +451,17 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
      *  JPEG. Striped rendering keeps memory bounded so the export keeps the sensor's resolution. */
     private fun exportStill() {
         val uri = stillRawUri ?: return
+        // Snapshot the grade and LUTs at the moment Export is tapped. The develop takes several
+        // seconds, so reading them later would let a slider moved mid-export change the saved image.
+        val gradeSnapshot = grade
+        val lutSnapshot = resolvedLuts()
         exportState = Exporter.Progress.Running(0)
         exportPhase = "Developing…"
         viewModelScope.launch {
             val saved = withContext(Dispatchers.Default) {
                 val full = RawDecoder.develop(getApplication(), uri) ?: return@withContext null
                 exportPhase = "Rendering…"
-                val bmp = StillGlRenderer.renderTiled(full, grade, resolvedLuts()) { f ->
+                val bmp = StillGlRenderer.renderTiled(full, gradeSnapshot, lutSnapshot) { f ->
                     exportState = Exporter.Progress.Running((f * 100).toInt().coerceIn(1, 99))
                 } ?: return@withContext null
                 exportPhase = "Saving…"
