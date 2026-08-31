@@ -13,7 +13,10 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-data class LutEntry(val id: String, val name: String)
+/** What kind of footage a LUT is built for, which decides the conversion applied before it. */
+enum class LutCategory { LOG, PROCESSED }
+
+data class LutEntry(val id: String, val name: String, val category: LutCategory = LutCategory.LOG)
 
 /**
  * Imported .cube files, with a parsed binary cache.
@@ -30,15 +33,44 @@ class LutLibrary(context: Context) {
 
     private val dir = File(context.filesDir, "luts").apply { mkdirs() }
 
+    // id -> category, persisted as a small properties file alongside the .cube files. Anything not
+    // listed defaults to LOG, so LUTs imported before categories existed keep working unchanged.
+    private val categoryFile = File(dir, "categories.properties")
+    private val categories: MutableMap<String, LutCategory> = loadCategories()
+
+    private fun loadCategories(): MutableMap<String, LutCategory> {
+        val map = mutableMapOf<String, LutCategory>()
+        if (!categoryFile.isFile) return map
+        runCatching {
+            categoryFile.readLines().forEach { line ->
+                val i = line.indexOf('=')
+                if (i > 0) {
+                    val id = line.substring(0, i)
+                    runCatching { LutCategory.valueOf(line.substring(i + 1).trim()) }
+                        .getOrNull()?.let { map[id] = it }
+                }
+            }
+        }
+        return map
+    }
+
+    private fun saveCategories() {
+        runCatching {
+            categoryFile.writeText(categories.entries.joinToString("\n") { "${it.key}=${it.value.name}" })
+        }.onFailure { Log.w(TAG, "could not save LUT categories", it) }
+    }
+
+    fun categoryOf(id: String): LutCategory = categories[id] ?: LutCategory.LOG
+
     fun list(): List<LutEntry> = dir.listFiles { f -> f.extension == "cube" }
         ?.sortedBy { it.nameWithoutExtension.lowercase() }
-        ?.map { LutEntry(it.nameWithoutExtension, it.nameWithoutExtension) }
+        ?.map { LutEntry(it.nameWithoutExtension, it.nameWithoutExtension, categoryOf(it.nameWithoutExtension)) }
         ?: emptyList()
 
     fun displayName(id: String): String = id
 
     /** Copies, parses and caches. Returns the entry, or null with the reason logged. */
-    fun import(context: Context, uri: Uri, suggestedName: String?): LutEntry? {
+    fun import(context: Context, uri: Uri, suggestedName: String?, category: LutCategory = LutCategory.LOG): LutEntry? {
         val base = (suggestedName ?: queryDisplayName(context, uri) ?: uri.lastPathSegment ?: "lut")
             .substringAfterLast('/')
             .removeSuffix(".cube")
@@ -60,8 +92,10 @@ class LutLibrary(context: Context) {
         return when (val r = dest.inputStream().use { CubeParser.parse(it) }) {
             is CubeResult.Ok -> {
                 writeCache(name, r.lut)
-                Log.i(TAG, "imported $name size=${r.lut.size}")
-                LutEntry(name, name)
+                categories[name] = category
+                saveCategories()
+                Log.i(TAG, "imported $name size=${r.lut.size} category=$category")
+                LutEntry(name, name, category)
             }
             is CubeResult.Error -> {
                 Log.e(TAG, "rejected $name: ${r.message} (line ${r.line})")
@@ -92,6 +126,7 @@ class LutLibrary(context: Context) {
     fun delete(id: String) {
         File(dir, "$id.cube").delete()
         File(dir, "$id.bin").delete()
+        if (categories.remove(id) != null) saveCategories()
     }
 
     private fun cacheFile(id: String) = File(dir, "$id.bin")

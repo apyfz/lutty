@@ -13,7 +13,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -37,6 +37,8 @@ import androidx.media3.effect.Presentation
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.apyfz.lutty.data.LutCategory
+import com.apyfz.lutty.data.LutEntry
 import com.apyfz.lutty.export.Exporter
 import com.apyfz.lutty.gl.GradeEffect
 import com.apyfz.lutty.model.Profile
@@ -44,27 +46,36 @@ import kotlin.math.roundToInt
 
 /** One tool per icon. Selecting a tool swaps the single control row above the rail. */
 private enum class Tool(val label: String, val icon: ImageVector) {
-    CONVERT("Convert", Icons.Default.SwapHoriz),
-    LUTS("LUTs", Icons.Default.PhotoFilter),
-    EXPOSURE("Exposure", Icons.Default.Exposure),
-    TEMPERATURE("Temp", Icons.Default.Thermostat),
-    TINT("Tint", Icons.Default.InvertColors),
-    CONTRAST("Contrast", Icons.Default.Contrast),
-    SATURATION("Saturation", Icons.Default.WaterDrop),
-    PRESETS("Presets", Icons.Default.Bookmarks),
+    CONVERT("Convert", Icons.Outlined.SwapHoriz),
+    LUTS("LUTs", Icons.Outlined.PhotoFilter),
+    EXPOSURE("Exposure", Icons.Outlined.Exposure),
+    TEMPERATURE("Temp", Icons.Outlined.Thermostat),
+    TINT("Tint", Icons.Outlined.InvertColors),
+    CONTRAST("Contrast", Icons.Outlined.Contrast),
+    SATURATION("Saturation", Icons.Outlined.WaterDrop),
+    PRESETS("Presets", Icons.Outlined.Bookmarks),
 }
 
 @Composable
 fun EditorScreen(vm: EditorViewModel) {
     val context = LocalContext.current
 
+    // Gallery photo picker: the fast default for clips that live in the camera roll.
     val pickVideo = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri -> uri?.let { vm.setVideo(it) } }
 
+    // System file browser, reached via the folder button. The gallery only lists MediaStore-indexed
+    // clips, so camera-raw formats sitting in a plain folder are invisible there. "*/*" is needed
+    // because raw stills (DNG) and RED .R3D carry no recognised video MIME type. openFile() sniffs
+    // the type and routes raw stills to the developer and everything else to the video path.
+    val pickVideoFile = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let { vm.openFile(it) } }
+
     val pickLut = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
-    ) { uri -> uri?.let { vm.importLut(it, null) } }
+    ) { uri -> uri?.let { vm.onLutPicked(it) } }
 
     val player = remember {
         ExoPlayer.Builder(context).build().apply {
@@ -101,10 +112,84 @@ fun EditorScreen(vm: EditorViewModel) {
         }
     }
 
+    // Save progress popup. The tiled export reports per-strip progress, so this shows a real bar
+    // rather than an unbounded spinner while a full-resolution still is written.
+    (vm.exportState as? Exporter.Progress.Running)?.let { running ->
+        val determinate = running.percent in 1..99
+        AlertDialog(
+            onDismissRequest = { },
+            text = {
+                Column {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(vm.exportPhase ?: "Exporting…", style = MaterialTheme.typography.titleSmall)
+                        if (determinate) Text(
+                            "${running.percent}%",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    if (determinate) {
+                        LinearProgressIndicator({ running.percent / 100f }, Modifier.fillMaxWidth())
+                    } else {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                }
+            },
+            confirmButton = {},
+        )
+    }
+    (vm.exportState as? Exporter.Progress.Done)?.let { done ->
+        AlertDialog(
+            onDismissRequest = { vm.clearExportState() },
+            title = { Text("Saved", style = MaterialTheme.typography.titleMedium) },
+            text = { Text("Saved to your gallery.") },
+            confirmButton = { TextButton(onClick = { vm.clearExportState() }) { Text("Done") } },
+            dismissButton = {
+                TextButton(onClick = {
+                    done.uri?.let { u ->
+                        val type = context.contentResolver.getType(u) ?: "image/*"
+                        runCatching {
+                            context.startActivity(
+                                android.content.Intent(android.content.Intent.ACTION_VIEW)
+                                    .setDataAndType(u, type)
+                                    .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            )
+                        }
+                    }
+                    vm.clearExportState()
+                }) { Text("Open gallery") }
+            },
+        )
+    }
+
+    vm.pendingLutUri?.let {
+        AlertDialog(
+            onDismissRequest = { vm.cancelLutImport() },
+            title = { Text("What is this LUT for?", style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Text(
+                    "LOG LUTs are applied after converting to Apple Log 2. Processed LUTs apply " +
+                        "straight onto already-graded (Rec.709) footage."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { vm.confirmLutImport(LutCategory.LOG) }) { Text("LOG") }
+            },
+            dismissButton = {
+                TextButton(onClick = { vm.confirmLutImport(LutCategory.PROCESSED) }) { Text("Processed") }
+            },
+        )
+    }
+
     vm.pendingVideo?.let {
         AlertDialog(
             onDismissRequest = { vm.cancelPendingVideo() },
-            icon = { Icon(Icons.Default.PhotoFilter, null) },
+            icon = { Icon(Icons.Outlined.PhotoFilter, null) },
             title = { Text("Keep the current grade?") },
             text = {
                 Text(
@@ -145,22 +230,53 @@ fun EditorScreen(vm: EditorViewModel) {
                         )
                     },
                 )
+            } else if (vm.stillImage != null) {
+                Image(
+                    bitmap = vm.stillImage!!.asImageBitmap(),
+                    contentDescription = "Graded still",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else if (vm.loadingRaw || vm.stillRendering) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        if (vm.loadingRaw) "Developing raw…" else "Rendering…",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
             } else {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Lutty", style = MaterialTheme.typography.headlineMedium, color = Color.White)
-                    Spacer(Modifier.height(16.dp))
-                    Button(onClick = {
-                        pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
-                    }) { Text("Choose a clip") }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(onClick = {
+                            pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+                        }) { Text("Choose a clip") }
+                        OutlinedButton(onClick = { pickVideoFile.launch(arrayOf("*/*")) }) {
+                            Icon(Icons.Outlined.FolderOpen, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Browse")
+                        }
+                    }
+                    vm.rawError?.let {
+                        Spacer(Modifier.height(10.dp))
+                        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+                    }
                 }
             }
 
-            FilledTonalIconButton(
-                onClick = {
+            Row(
+                Modifier.align(Alignment.TopStart).padding(start = 12.dp, top = 44.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilledTonalIconButton(onClick = {
                     pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
-                },
-                modifier = Modifier.align(Alignment.TopStart).padding(start = 12.dp, top = 44.dp),
-            ) { Icon(Icons.Default.VideoLibrary, "Choose a clip") }
+                }) { Icon(Icons.Outlined.VideoLibrary, "Choose a clip from the gallery", Modifier.size(20.dp)) }
+                FilledTonalIconButton(onClick = {
+                    pickVideoFile.launch(arrayOf("*/*"))
+                }) { Icon(Icons.Outlined.FolderOpen, "Browse files for a clip", Modifier.size(20.dp)) }
+            }
 
             ExportButton(vm, Modifier.align(Alignment.TopEnd).padding(end = 12.dp, top = 44.dp))
 
@@ -242,7 +358,7 @@ private fun ToolRail(selected: Tool, onSelect: (Tool) -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 FilledIconToggleButton(checked = active, onCheckedChange = { onSelect(t) }) {
-                    Icon(t.icon, contentDescription = t.label)
+                    Icon(t.icon, contentDescription = t.label, modifier = Modifier.size(20.dp))
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -274,7 +390,7 @@ private fun ValueSlider(
             Text(String.format(format, value), style = MaterialTheme.typography.labelLarge)
             Spacer(Modifier.width(4.dp))
             IconButton(onClick = { onChange(neutral) }, modifier = Modifier.size(28.dp)) {
-                Icon(Icons.Default.Refresh, "Reset $label", Modifier.size(16.dp))
+                Icon(Icons.Outlined.Refresh, "Reset $label", Modifier.size(16.dp))
             }
         }
         SlimSlider(value = value, range = range, onChange = onChange)
@@ -294,7 +410,7 @@ private fun ConvertControl(vm: EditorViewModel) {
             vm.setInputProfile(it)
         }
         Icon(
-            Icons.Default.ArrowForward, null,
+            Icons.Outlined.ArrowForward, null,
             Modifier.padding(horizontal = 8.dp).size(14.dp),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -323,9 +439,9 @@ private fun ProfileChip(
                 )
             },
             leadingIcon = if (uncertain) {
-                { Icon(Icons.Default.HelpOutline, "Unsure, check this", Modifier.size(14.dp)) }
+                { Icon(Icons.Outlined.HelpOutline, "Unsure, check this", Modifier.size(14.dp)) }
             } else null,
-            trailingIcon = { Icon(Icons.Default.ArrowDropDown, null, Modifier.size(16.dp)) },
+            trailingIcon = { Icon(Icons.Outlined.ArrowDropDown, null, Modifier.size(16.dp)) },
         )
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             Profile.entries.forEach { p ->
@@ -387,7 +503,7 @@ private fun LutLibraryStrip(vm: EditorViewModel, onImport: () -> Unit) {
                 Modifier.size(54.dp).clip(MaterialTheme.shapes.medium)
                     .background(MaterialTheme.colorScheme.surfaceContainerHighest),
                 contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Default.FileOpen, "Import a .cube file", Modifier.size(20.dp)) }
+            ) { Icon(Icons.Outlined.FileOpen, "Import a .cube file", Modifier.size(20.dp)) }
             Spacer(Modifier.height(4.dp))
             Text(
                 "Import", style = MaterialTheme.typography.labelSmall, maxLines = 1,
@@ -406,7 +522,7 @@ private fun LutLibraryStrip(vm: EditorViewModel, onImport: () -> Unit) {
             )
         }
 
-        vm.lutEntries.forEach { entry ->
+        val renderEntry: @Composable (LutEntry) -> Unit = { entry ->
             val appliedSlot = luts.indexOfFirst { it.lutId == entry.id }
             val isTarget = luts.getOrNull(vm.targetSlot)?.lutId == entry.id
             LutTile(
@@ -420,6 +536,14 @@ private fun LutLibraryStrip(vm: EditorViewModel, onImport: () -> Unit) {
                 onLongClick = { confirmDelete = entry.id },
             )
         }
+        val logLuts = vm.lutEntries.filter { it.category == LutCategory.LOG }
+        val processedLuts = vm.lutEntries.filter { it.category == LutCategory.PROCESSED }
+        // Only label the sections once both kinds exist; with a single kind the strip stays clean.
+        val labelled = logLuts.isNotEmpty() && processedLuts.isNotEmpty()
+        if (labelled) LutSectionLabel("LOG")
+        logLuts.forEach { renderEntry(it) }
+        if (labelled) LutSectionLabel("Processed")
+        processedLuts.forEach { renderEntry(it) }
 
         // A second LUT is only ever added on purpose, never by tapping another tile.
         if (luts.size == 1) {
@@ -431,7 +555,7 @@ private fun LutLibraryStrip(vm: EditorViewModel, onImport: () -> Unit) {
                     Modifier.size(54.dp).clip(MaterialTheme.shapes.medium)
                         .background(MaterialTheme.colorScheme.surfaceContainerHighest),
                     contentAlignment = Alignment.Center,
-                ) { Icon(Icons.Default.Add, "Add a second LUT on top", Modifier.size(22.dp)) }
+                ) { Icon(Icons.Outlined.Add, "Add a second LUT on top", Modifier.size(22.dp)) }
                 Spacer(Modifier.height(4.dp))
                 Text(
                     "2nd", style = MaterialTheme.typography.labelSmall, maxLines = 1,
@@ -451,6 +575,24 @@ private fun LutLibraryStrip(vm: EditorViewModel, onImport: () -> Unit) {
                 TextButton(onClick = { vm.deleteLut(id); confirmDelete = null }) { Text("Remove") }
             },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+/** Inline divider + label separating the LOG and Processed groups in the LUT strip. */
+@Composable
+private fun LutSectionLabel(text: String) {
+    Row(Modifier.height(54.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier.width(1.dp).height(34.dp)
+                .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f))
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
         )
     }
 }
@@ -498,7 +640,7 @@ private fun LutTile(
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        Icons.Default.Check, "Applied",
+                        Icons.Outlined.Check, "Applied",
                         Modifier.size(10.dp),
                         tint = MaterialTheme.colorScheme.onPrimary,
                     )
@@ -562,10 +704,10 @@ private fun PresetControl(vm: EditorViewModel) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(onClick = { showSave = true }, modifier = Modifier.size(34.dp)) {
-            Icon(Icons.Default.Save, "Save current grade", Modifier.size(18.dp))
+            Icon(Icons.Outlined.Save, "Save current grade", Modifier.size(18.dp))
         }
         IconButton(onClick = { showBake = true }, modifier = Modifier.size(34.dp)) {
-            Icon(Icons.Default.FileDownload, "Bake grade to a .cube file", Modifier.size(18.dp))
+            Icon(Icons.Outlined.FileDownload, "Bake grade to a .cube file", Modifier.size(18.dp))
         }
         Spacer(Modifier.width(6.dp))
         vm.presets.forEach { p ->
@@ -575,7 +717,7 @@ private fun PresetControl(vm: EditorViewModel) {
                 label = { Text(p.name, maxLines = 1, style = MaterialTheme.typography.labelSmall) },
                 trailingIcon = {
                     Icon(
-                        Icons.Default.Close, "Delete ${p.name}",
+                        Icons.Outlined.Close, "Delete ${p.name}",
                         Modifier.size(14.dp).pointerInput(p.name) {
                             detectTapGestures(onTap = { vm.deletePreset(p.name) })
                         },
@@ -589,7 +731,7 @@ private fun PresetControl(vm: EditorViewModel) {
     if (showBake) {
         AlertDialog(
             onDismissRequest = { showBake = false },
-            icon = { Icon(Icons.Default.FileDownload, null) },
+            icon = { Icon(Icons.Outlined.FileDownload, null) },
             title = { Text("Bake to .cube") },
             text = {
                 Column {
@@ -654,11 +796,11 @@ private fun ExportButton(vm: EditorViewModel, modifier: Modifier = Modifier) {
             }
         is Exporter.Progress.Done -> FilledTonalIconButton(
             onClick = { vm.clearExportState() }, modifier = modifier,
-        ) { Icon(Icons.Default.CheckCircle, "Saved to Movies/Lutty") }
+        ) { Icon(Icons.Outlined.CheckCircle, "Saved", Modifier.size(20.dp)) }
         is Exporter.Progress.Failed -> {
             var show by remember { mutableStateOf(true) }
             FilledTonalIconButton(onClick = { show = true }, modifier = modifier) {
-                Icon(Icons.Default.ErrorOutline, "Export failed")
+                Icon(Icons.Outlined.ErrorOutline, "Export failed", Modifier.size(20.dp))
             }
             if (show) {
                 AlertDialog(
@@ -672,7 +814,8 @@ private fun ExportButton(vm: EditorViewModel, modifier: Modifier = Modifier) {
             }
         }
         null -> FilledTonalIconButton(
-            onClick = { vm.export() }, modifier = modifier, enabled = vm.videoUri != null,
-        ) { Icon(Icons.Default.Download, "Export full resolution") }
+            onClick = { vm.export() }, modifier = modifier,
+            enabled = vm.videoUri != null || vm.stillImage != null,
+        ) { Icon(Icons.Outlined.FileDownload, "Export full resolution", Modifier.size(20.dp)) }
     }
 }

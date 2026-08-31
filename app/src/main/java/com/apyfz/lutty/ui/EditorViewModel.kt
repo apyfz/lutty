@@ -7,12 +7,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import com.apyfz.lutty.color.LutData
+import com.apyfz.lutty.data.LutCategory
 import com.apyfz.lutty.data.LutEntry
 import com.apyfz.lutty.data.LutLibrary
 import com.apyfz.lutty.data.Preset
 import com.apyfz.lutty.data.PresetStore
 import com.apyfz.lutty.export.Exporter
 import com.apyfz.lutty.gl.GradeController
+import com.apyfz.lutty.gl.StillGlRenderer
 import android.content.ContentValues
 import android.graphics.Bitmap
 import android.os.Environment
@@ -21,6 +23,8 @@ import android.util.Log
 import com.apyfz.lutty.color.GradePipeline
 import com.apyfz.lutty.media.LutSwatch
 import com.apyfz.lutty.media.ProfileDetector
+import com.apyfz.lutty.media.RawDecoder
+import com.apyfz.lutty.media.StillEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
@@ -38,10 +42,24 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private val exporter = Exporter(app)
 
     var videoUri by mutableStateOf<Uri?>(null); private set
+    // Raw stills path. When [stillImage] is set the editor shows a graded bitmap instead of the
+    // player; the full-resolution [stillFull] is kept only for export.
+    var stillImage by mutableStateOf<Bitmap?>(null); private set
+    var loadingRaw by mutableStateOf(false); private set
+    var stillRendering by mutableStateOf(false); private set
+    var rawError by mutableStateOf<String?>(null); private set
+    private var stillPreview: StillEngine.LinearImage? = null
+    // A small develop backs the fast interactive preview; export re-develops from [stillRawUri] at
+    // full resolution and renders it in strips, so the saved image keeps the sensor's resolution.
+    private var stillSource: RawDecoder.Linear? = null
+    private var stillRawUri: Uri? = null
+    private var stillRenderJob: Job? = null
     var grade by mutableStateOf(GradeState.NEUTRAL); private set
     var lutEntries by mutableStateOf(library.list()); private set
     var presets by mutableStateOf(presetStore.list()); private set
     var exportState by mutableStateOf<Exporter.Progress?>(null); private set
+    /** Human-readable stage of a still export ("Developing…", "Rendering…", "Saving…"). */
+    var exportPhase by mutableStateOf<String?>(null); private set
     var detection by mutableStateOf<ProfileDetector.Result?>(null); private set
     var detecting by mutableStateOf(false); private set
 
@@ -88,6 +106,85 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private val rawExtensions =
+        listOf(".dng", ".nef", ".cr2", ".cr3", ".arw", ".raf", ".rw2", ".orf", ".pef", ".srw", ".raw")
+
+    /** Picker entry that decides between the video path and the raw-still path by file type. */
+    fun openFile(uri: Uri) {
+        val resolver = getApplication<Application>().contentResolver
+        val mime = resolver.getType(uri).orEmpty().lowercase()
+        val name = (uri.lastPathSegment ?: "").lowercase()
+        val isRaw = mime.contains("dng") || mime.contains("x-adobe") ||
+            rawExtensions.any { name.endsWith(it) }
+        if (isRaw) loadRaw(uri) else setVideo(uri)
+    }
+
+    /** Develops a raw stills file to linear and shows it as a graded still. */
+    private var rawLoadJob: Job? = null
+
+    /** Drops any loaded still so a new load starts clean — no stale clip shown or exportable. */
+    private fun clearStill() {
+        stillRenderJob?.cancel()
+        stillRendering = false
+        stillImage = null
+        stillSource = null
+        stillPreview = null
+        stillRawUri = null
+    }
+
+    private fun loadRaw(uri: Uri) {
+        // Cancel any develop already in flight and drop the previous still immediately, so opening B
+        // while A is loaded cannot leave A on screen or as the export source until B finishes.
+        rawLoadJob?.cancel()
+        clearStill()
+        loadingRaw = true
+        rawError = null
+        rawLoadJob = viewModelScope.launch {
+            val developed = withContext(Dispatchers.IO) {
+                RawDecoder.develop(getApplication(), uri, PREVIEW_EDGE)
+            }
+            ensureActive()   // a newer load may have superseded this one while decoding
+            if (developed == null) {
+                loadingRaw = false
+                rawError = "Could not develop this raw file"
+                return@launch
+            }
+            // Leaving the video path: release any player-bound state so the still owns the surface.
+            videoUri = null
+            detection = null
+            stillSource = developed
+            stillRawUri = uri
+            stillPreview = withContext(Dispatchers.Default) { StillEngine.fromRaw(developed, PREVIEW_EDGE) }
+            cache.clear()
+            // Raw is scene-linear BT.2020; default to encoding into Apple Log 2 for the LUT library.
+            apply(GradeState.NEUTRAL.copy(
+                inputProfile = Profile.RAW_LINEAR.name,
+                targetProfile = Profile.APPLE_LOG_2.name,
+            ))
+            loadingRaw = false
+            renderStill()
+            refreshThumbnails()
+        }
+    }
+
+    /** Re-renders the on-screen still from the current grade. No-op when no still is loaded. */
+    private fun renderStill() {
+        val preview = stillPreview ?: return
+        stillRenderJob?.cancel()
+        stillRendering = true
+        stillRenderJob = viewModelScope.launch {
+            val bmp = withContext(Dispatchers.Default) {
+                // GPU path: one draw of the same shader as video. CPU is a last-resort fallback for
+                // a device without a working GL context (it is far slower with a LUT applied).
+                StillGlRenderer.render(preview, grade, resolvedLuts())
+                    ?: StillEngine.render(preview, grade, resolvedLuts())
+            }
+            ensureActive()
+            stillImage = bmp
+            stillRendering = false
+        }
+    }
+
     /** Answer to the carry-over prompt. */
     fun resolvePendingVideo(keepGrade: Boolean) {
         pendingVideo?.let { loadVideo(it, keepGrade) }
@@ -97,6 +194,10 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun cancelPendingVideo() { pendingVideo = null }
 
     private fun loadVideo(uri: Uri, keepGrade: Boolean) {
+        // Switching to video: drop any still so export() doesn't route to a stale still source.
+        rawLoadJob?.cancel()
+        clearStill()
+        loadingRaw = false
         videoUri = uri
         if (!keepGrade) {
             cache.clear()
@@ -172,18 +273,18 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val list = grade.luts.toMutableList()
         if (targetSlot < list.size) list.removeAt(targetSlot)
         targetSlot = targetSlot.coerceAtMost(maxOf(0, list.size - 1))
-        applyWithLuts(grade.copy(luts = list))
+        applyLuts(list)
     }
 
     fun removeLutById(id: String) {
-        applyWithLuts(grade.copy(luts = grade.luts.filterNot { it.lutId == id }))
+        applyLuts(grade.luts.filterNot { it.lutId == id })
     }
 
     fun deleteLut(id: String) {
         library.delete(id)
         cache.remove(id)
         lutEntries = library.list()
-        applyWithLuts(grade.copy(luts = grade.luts.filterNot { it.lutId == id }))
+        applyLuts(grade.luts.filterNot { it.lutId == id })
         refreshThumbnails()
     }
 
@@ -219,6 +320,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         grade = newGrade
         controller.updateGrade(newGrade)
         if (targetChanged) refreshThumbnails()
+        renderStill()
     }
 
     /** LUT set changed, so textures must be rebuilt. */
@@ -226,21 +328,61 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         grade = newGrade
         controller.updateLuts(newGrade, resolvedLuts())
         refreshThumbnails()
+        renderStill()
     }
 
-    fun importLut(uri: Uri, name: String?) {
-        library.import(getApplication(), uri, name)?.let { entry ->
+    /** A picked .cube waiting for the user to say what footage it is built for. */
+    var pendingLutUri by mutableStateOf<Uri?>(null); private set
+
+    fun onLutPicked(uri: Uri) { pendingLutUri = uri }
+    fun cancelLutImport() { pendingLutUri = null }
+
+    fun confirmLutImport(category: LutCategory) {
+        val uri = pendingLutUri ?: return
+        pendingLutUri = null
+        library.import(getApplication(), uri, null, category)?.let { entry ->
             lutEntries = library.list()
             applyLutToSlot(entry)
         }
     }
 
-    /** Puts [entry] in [targetSlot], replacing whatever was there. */
+    /**
+     * Puts [entry] in [targetSlot] and points the conversion at what the LUT expects: LOG LUTs
+     * grade in Apple Log 2, "processed" LUTs apply straight onto already-graded footage.
+     */
     fun applyLutToSlot(entry: LutEntry) {
         val slot = LutSlot(entry.id, entry.name, 1f)
         val list = grade.luts.toMutableList()
+        val base = list.getOrNull(0)
+        // A stack shares one conversion target, so it cannot mix categories — a LOG and a Processed
+        // LUT need different encodings. Stacking a mismatched LUT instead starts a fresh single-LUT
+        // grade, so one LUT is never fed the wrong space.
+        if (targetSlot >= 1 && base != null && library.categoryOf(base.lutId) != entry.category) {
+            targetSlot = 0
+            applyLuts(listOf(slot))
+            return
+        }
         if (targetSlot < list.size) list[targetSlot] = slot else list.add(slot)
-        applyWithLuts(grade.copy(luts = list.take(2)))
+        applyLuts(list)
+    }
+
+    /**
+     * Applies a new LUT stack and re-points the conversion target at the base (slot 0) LUT's
+     * category. Centralised so every mutation — add, replace, remove, reorder — keeps the target in
+     * step with the base; otherwise removing or reordering a LUT could leave the former category's
+     * conversion in place. With no LUT, the current target is left untouched.
+     */
+    private fun applyLuts(newLuts: List<LutSlot>) {
+        val list = newLuts.take(2)
+        val base = list.firstOrNull()
+        val newGrade = if (base != null) {
+            val target = if (library.categoryOf(base.lutId) == LutCategory.PROCESSED)
+                Profile.PASSTHROUGH else Profile.APPLE_LOG_2
+            grade.copy(luts = list, targetProfile = target.name)
+        } else {
+            grade.copy(luts = list)
+        }
+        applyWithLuts(newGrade)
     }
 
     /** Opens a second slot so the next tile tap layers on top instead of replacing. */
@@ -255,14 +397,14 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun removeLut(index: Int) {
-        applyWithLuts(grade.copy(luts = grade.luts.filterIndexed { i, _ -> i != index }))
+        applyLuts(grade.luts.filterIndexed { i, _ -> i != index })
     }
 
     fun moveLut(from: Int, to: Int) {
         if (to !in grade.luts.indices) return
         val list = grade.luts.toMutableList()
         list.add(to, list.removeAt(from))
-        applyWithLuts(grade.copy(luts = list))
+        applyLuts(list)
     }
 
     fun setStrength(index: Int, value: Float) {
@@ -299,12 +441,68 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun export() {
+        if (stillSource != null) { exportStill(); return }
         val uri = videoUri ?: return
         exportState = Exporter.Progress.Running(0)
         exporter.start(uri, grade, resolvedLuts()) { exportState = it }
     }
 
+    /** Re-develops the raw at full resolution and renders it in strips on the GPU, then saves a
+     *  JPEG. Striped rendering keeps memory bounded so the export keeps the sensor's resolution. */
+    private fun exportStill() {
+        val uri = stillRawUri ?: return
+        // Snapshot the grade and LUTs at the moment Export is tapped. The develop takes several
+        // seconds, so reading them later would let a slider moved mid-export change the saved image.
+        val gradeSnapshot = grade
+        val lutSnapshot = resolvedLuts()
+        exportState = Exporter.Progress.Running(0)
+        exportPhase = "Developing…"
+        viewModelScope.launch {
+            val saved = withContext(Dispatchers.Default) {
+                val full = RawDecoder.develop(getApplication(), uri) ?: return@withContext null
+                exportPhase = "Rendering…"
+                val bmp = StillGlRenderer.renderTiled(full, gradeSnapshot, lutSnapshot) { f ->
+                    exportState = Exporter.Progress.Running((f * 100).toInt().coerceIn(1, 99))
+                } ?: return@withContext null
+                exportPhase = "Saving…"
+                exportState = Exporter.Progress.Running(100)
+                saveBitmapToGallery(bmp)
+            }
+            exportPhase = null
+            exportState =
+                if (saved != null) Exporter.Progress.Done(saved, 0, 0)
+                else Exporter.Progress.Failed("Could not save the image")
+        }
+    }
+
+    private fun saveBitmapToGallery(bmp: Bitmap): Uri? = try {
+        val resolver = getApplication<Application>().contentResolver
+        val name = "Lutty_${System.currentTimeMillis()}.jpg"
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, name)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Lutty")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+        if (uri == null) null else {
+            resolver.openOutputStream(uri)?.use { bmp.compress(Bitmap.CompressFormat.JPEG, 95, it) }
+            values.clear(); values.put(MediaStore.Images.Media.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+            uri
+        }
+    } catch (e: Exception) {
+        Log.e("LuttyExport", "could not save image", e); null
+    }
+
     fun clearExportState() { exportState = null }
+
+    companion object {
+        /** Long-edge cap for the interactive still preview; export re-renders at full resolution.
+         *  The GPU renders comfortably at this size; the cost that remains is the pixel read-back. */
+        // Preview develop resolution; export re-develops at full resolution and renders in strips.
+        private const val PREVIEW_EDGE = 2048
+    }
 
     var bypassActive by mutableStateOf(false); private set
 

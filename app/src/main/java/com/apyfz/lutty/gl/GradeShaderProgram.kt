@@ -10,11 +10,11 @@ import androidx.media3.common.util.GlUtil
 import androidx.media3.common.util.Size
 import androidx.media3.effect.BaseGlShaderProgram
 import com.apyfz.lutty.color.ColorProfiles
+import com.apyfz.lutty.color.GradePipeline
 import com.apyfz.lutty.color.LutData
 import com.apyfz.lutty.model.GradeState
-import com.apyfz.lutty.model.Profile
 
-private const val VERTEX_SHADER = """#version 300 es
+internal const val VERTEX_SHADER = """#version 300 es
 in vec4 aFramePosition;
 uniform mat4 uTransformationMatrix;
 uniform mat4 uTexTransformationMatrix;
@@ -27,7 +27,7 @@ void main() {
 }
 """
 
-private const val FRAGMENT_SHADER = """#version 300 es
+internal const val FRAGMENT_SHADER = """#version 300 es
 precision highp float;
 precision highp sampler3D;
 
@@ -45,7 +45,7 @@ uniform float uLut1Size;
 uniform vec3  uLut1DomainMin;
 uniform vec3  uLut1DomainMax;
 
-uniform int  uInputProfile;   // 0 passthrough, 1 O-Log, 2 Apple Log, 3 Apple Log 2
+uniform int  uInputProfile;   // 0 passthrough, 1 O-Log, 2 Apple Log, 3 Apple Log 2, 4 Log3G10, 5 N-Log, 6 F-Log2
 uniform int  uTargetProfile;
 uniform int  uGamutEnabled;
 uniform mat3 uGamutMatrix;
@@ -85,15 +85,64 @@ float appleDecode(float p) {
   return A_R0;
 }
 
+// ---- RED Log3G10 v3, RED "REDWideGamutRGB and Log3G10" whitepaper ----
+const float G10_A = 0.224282;
+const float G10_B = 155.975327;
+const float G10_C = 0.01;
+const float G10_G = 15.1927;
+float g10Encode(float r) {
+  float x = r + G10_C;
+  return x < 0.0 ? x * G10_G : G10_A * (log(x * G10_B + 1.0) / log(10.0));
+}
+float g10Decode(float p) {
+  return p < 0.0 ? p / G10_G - G10_C : (pow(10.0, p / G10_A) - 1.0) / G10_B - G10_C;
+}
+
+// ---- Nikon N-Log, N-Log Specification Document v1.0 ----
+const float N_CUT1 = 0.328;
+const float N_CUT2 = 0.4418377321603128;
+const float N_A    = 0.635386119257087;
+const float N_B    = 0.0075;
+const float N_C    = 0.1466275659824047;
+const float N_D    = 0.6050830889540567;
+float nEncode(float r) {
+  return r < N_CUT1 ? N_A * pow(r + N_B, 1.0 / 3.0) : N_C * log(r) + N_D;
+}
+float nDecode(float p) {
+  return p < N_CUT2 ? pow(p / N_A, 3.0) - N_B : exp((p - N_D) / N_C);
+}
+
+// ---- Fujifilm F-Log2, F-Log2 Data Sheet (2022) ----
+const float F2_CUT1 = 0.000889;
+const float F2_CUT2 = 0.100686685370811;
+const float F2_A    = 5.555556;
+const float F2_B    = 0.064829;
+const float F2_C    = 0.245281;
+const float F2_D    = 0.384316;
+const float F2_E    = 8.799461;
+const float F2_F    = 0.092864;
+float f2Encode(float r) {
+  return r < F2_CUT1 ? F2_E * r + F2_F : F2_C * (log(F2_A * r + F2_B) / log(10.0)) + F2_D;
+}
+float f2Decode(float p) {
+  return p < F2_CUT2 ? (p - F2_F) / F2_E : (pow(10.0, (p - F2_D) / F2_C) - F2_B) / F2_A;
+}
+
 vec3 decodeToLinear(vec3 c, int profile) {
   if (profile == 1) return vec3(oLogDecode(c.r), oLogDecode(c.g), oLogDecode(c.b));
   if (profile == 2 || profile == 3) return vec3(appleDecode(c.r), appleDecode(c.g), appleDecode(c.b));
-  return c;
+  if (profile == 4) return vec3(g10Decode(c.r), g10Decode(c.g), g10Decode(c.b));
+  if (profile == 5) return vec3(nDecode(c.r), nDecode(c.g), nDecode(c.b));
+  if (profile == 6) return vec3(f2Decode(c.r), f2Decode(c.g), f2Decode(c.b));
+  return c;   // 7 raw-linear: already linear
 }
 
 vec3 encodeFromLinear(vec3 l, int profile) {
   if (profile == 1) return vec3(oLogEncode(l.r), oLogEncode(l.g), oLogEncode(l.b));
   if (profile == 2 || profile == 3) return vec3(appleEncode(l.r), appleEncode(l.g), appleEncode(l.b));
+  if (profile == 4) return vec3(g10Encode(l.r), g10Encode(l.g), g10Encode(l.b));
+  if (profile == 5) return vec3(nEncode(l.r), nEncode(l.g), nEncode(l.b));
+  if (profile == 6) return vec3(f2Encode(l.r), f2Encode(l.g), f2Encode(l.b));
   return l;
 }
 
@@ -230,9 +279,9 @@ class GradeShaderProgram(
             glProgram.setIntUniform("uInputProfile", grade.input.shaderId)
             glProgram.setIntUniform("uTargetProfile", grade.target.shaderId)
 
-            val needsGamut = grade.input != Profile.APPLE_LOG_2 && grade.target == Profile.APPLE_LOG_2
-            glProgram.setIntUniform("uGamutEnabled", if (needsGamut) 1 else 0)
-            glProgram.setFloatsUniform("uGamutMatrix", GAMUT_BT2020_TO_AWG_COLUMN_MAJOR)
+            val gamut = GradePipeline.gamutMatrixToTarget(grade.input, grade.target)
+            glProgram.setIntUniform("uGamutEnabled", if (gamut != null) 1 else 0)
+            glProgram.setFloatsUniform("uGamutMatrix", columnMajor(gamut ?: ColorProfiles.BT2020_TO_APPLE_WIDE_GAMUT))
 
             glProgram.setFloatUniform("uExposure", grade.exposure)
             glProgram.setFloatsUniform("uWhiteBalance", grade.whiteBalanceGain())
@@ -284,11 +333,8 @@ class GradeShaderProgram(
 }
 
 /** GLSL mat3 uniforms are column-major, so the row-major matrix is transposed here. */
-private val GAMUT_BT2020_TO_AWG_COLUMN_MAJOR: FloatArray = run {
-    val m = ColorProfiles.BT2020_TO_APPLE_WIDE_GAMUT
-    floatArrayOf(
-        m[0].toFloat(), m[3].toFloat(), m[6].toFloat(),
-        m[1].toFloat(), m[4].toFloat(), m[7].toFloat(),
-        m[2].toFloat(), m[5].toFloat(), m[8].toFloat(),
-    )
-}
+internal fun columnMajor(m: DoubleArray): FloatArray = floatArrayOf(
+    m[0].toFloat(), m[3].toFloat(), m[6].toFloat(),
+    m[1].toFloat(), m[4].toFloat(), m[7].toFloat(),
+    m[2].toFloat(), m[5].toFloat(), m[8].toFloat(),
+)

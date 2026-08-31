@@ -77,7 +77,10 @@ object LutSwatch {
     private fun encode(linear: Float, profile: Profile): Float = when (profile) {
         Profile.O_LOG -> ColorProfiles.oLogEncode(linear.toDouble()).toFloat()
         Profile.APPLE_LOG, Profile.APPLE_LOG_2 -> ColorProfiles.appleLogEncode(linear.toDouble()).toFloat()
+        Profile.RED_LOG3G10 -> ColorProfiles.log3g10Encode(linear.toDouble()).toFloat()
+        Profile.NIKON_N_LOG -> ColorProfiles.nLogEncode(linear.toDouble()).toFloat()
+        Profile.FUJI_F_LOG2 -> ColorProfiles.fLog2Encode(linear.toDouble()).toFloat()
         // Treated as display-referred, so approximate the usual 709 transfer.
-        Profile.PASSTHROUGH -> Math.pow(linear.toDouble().coerceAtLeast(0.0), 1.0 / 2.2).toFloat()
+        Profile.RAW_LINEAR, Profile.PASSTHROUGH -> Math.pow(linear.toDouble().coerceAtLeast(0.0), 1.0 / 2.2).toFloat()
     }.coerceIn(0f, 1f)
 }
