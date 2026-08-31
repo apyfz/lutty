@@ -122,10 +122,21 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     /** Develops a raw stills file to linear and shows it as a graded still. */
     private var rawLoadJob: Job? = null
 
+    /** Drops any loaded still so a new load starts clean — no stale clip shown or exportable. */
+    private fun clearStill() {
+        stillRenderJob?.cancel()
+        stillRendering = false
+        stillImage = null
+        stillSource = null
+        stillPreview = null
+        stillRawUri = null
+    }
+
     private fun loadRaw(uri: Uri) {
-        // Cancel any develop already in flight: without this, opening B while A is still decoding
-        // lets whichever finishes last win, so the editor could end up showing the wrong clip.
+        // Cancel any develop already in flight and drop the previous still immediately, so opening B
+        // while A is loaded cannot leave A on screen or as the export source until B finishes.
         rawLoadJob?.cancel()
+        clearStill()
         loadingRaw = true
         rawError = null
         rawLoadJob = viewModelScope.launch {
@@ -183,6 +194,10 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun cancelPendingVideo() { pendingVideo = null }
 
     private fun loadVideo(uri: Uri, keepGrade: Boolean) {
+        // Switching to video: drop any still so export() doesn't route to a stale still source.
+        rawLoadJob?.cancel()
+        clearStill()
+        loadingRaw = false
         videoUri = uri
         if (!keepGrade) {
             cache.clear()
