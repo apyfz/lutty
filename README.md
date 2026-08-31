@@ -44,3 +44,8 @@ Requires the Android SDK and a JDK 17 or newer.
 ./gradlew :app:assembleDebug
 ./gradlew :app:testDebugUnitTest
 ```
+
+## Licence
+
+[PolyForm Noncommercial License 1.0.0](LICENSE.md). Fork it, modify it, and share
+it freely for any noncommercial purpose. You may not sell it or use it commercially.
