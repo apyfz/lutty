@@ -120,13 +120,19 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Develops a raw stills file to linear and shows it as a graded still. */
+    private var rawLoadJob: Job? = null
+
     private fun loadRaw(uri: Uri) {
+        // Cancel any develop already in flight: without this, opening B while A is still decoding
+        // lets whichever finishes last win, so the editor could end up showing the wrong clip.
+        rawLoadJob?.cancel()
         loadingRaw = true
         rawError = null
-        viewModelScope.launch {
+        rawLoadJob = viewModelScope.launch {
             val developed = withContext(Dispatchers.IO) {
                 RawDecoder.develop(getApplication(), uri, PREVIEW_EDGE)
             }
+            ensureActive()   // a newer load may have superseded this one while decoding
             if (developed == null) {
                 loadingRaw = false
                 rawError = "Could not develop this raw file"
@@ -333,7 +339,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val slot = LutSlot(entry.id, entry.name, 1f)
         val list = grade.luts.toMutableList()
         if (targetSlot < list.size) list[targetSlot] = slot else list.add(slot)
-        val target = if (entry.category == LutCategory.PROCESSED) Profile.PASSTHROUGH else Profile.APPLE_LOG_2
+        // Only the base LUT decides the conversion. A single grade has one target, so letting a
+        // stacked second LUT re-point it would break whichever LUT expects the other space.
+        val base = list.getOrNull(0) ?: slot
+        val category = if (base.lutId == entry.id) entry.category else library.categoryOf(base.lutId)
+        val target = if (category == LutCategory.PROCESSED) Profile.PASSTHROUGH else Profile.APPLE_LOG_2
         applyWithLuts(grade.copy(luts = list.take(2), targetProfile = target.name))
     }
 
