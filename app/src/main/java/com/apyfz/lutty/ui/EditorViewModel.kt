@@ -57,6 +57,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var lutEntries by mutableStateOf(library.list()); private set
     var presets by mutableStateOf(presetStore.list()); private set
     var exportState by mutableStateOf<Exporter.Progress?>(null); private set
+    /** Human-readable stage of a still export ("Developing…", "Rendering…", "Saving…"). */
+    var exportPhase by mutableStateOf<String?>(null); private set
     var detection by mutableStateOf<ProfileDetector.Result?>(null); private set
     var detecting by mutableStateOf(false); private set
 
@@ -389,13 +391,19 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private fun exportStill() {
         val uri = stillRawUri ?: return
         exportState = Exporter.Progress.Running(0)
+        exportPhase = "Developing…"
         viewModelScope.launch {
             val saved = withContext(Dispatchers.Default) {
                 val full = RawDecoder.develop(getApplication(), uri) ?: return@withContext null
-                val bmp = StillGlRenderer.renderTiled(full, grade, resolvedLuts())
-                    ?: return@withContext null
+                exportPhase = "Rendering…"
+                val bmp = StillGlRenderer.renderTiled(full, grade, resolvedLuts()) { f ->
+                    exportState = Exporter.Progress.Running((f * 100).toInt().coerceIn(1, 99))
+                } ?: return@withContext null
+                exportPhase = "Saving…"
+                exportState = Exporter.Progress.Running(100)
                 saveBitmapToGallery(bmp)
             }
+            exportPhase = null
             exportState =
                 if (saved != null) Exporter.Progress.Done(saved, 0, 0)
                 else Exporter.Progress.Failed("Could not save the image")

@@ -50,6 +50,7 @@ object StillGlRenderer {
      */
     fun renderTiled(
         raw: RawDecoder.Linear, grade: GradeState, luts: List<LutData>, tileRows: Int = 512,
+        onProgress: (Float) -> Unit = {},
     ): Bitmap? {
         val w = raw.width
         val h = raw.height
@@ -157,6 +158,7 @@ object StillGlRenderer {
                 GLES20.glDeleteTextures(2, intArrayOf(inTex, outTex[0]), 0)
                 GLES20.glDeleteFramebuffers(1, fbo, 0)
                 y0 += bh
+                onProgress(y0.toFloat() / h)
             }
             return bmp
         } catch (e: Throwable) {

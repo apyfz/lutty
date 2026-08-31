@@ -110,6 +110,61 @@ fun EditorScreen(vm: EditorViewModel) {
         }
     }
 
+    // Save progress popup. The tiled export reports per-strip progress, so this shows a real bar
+    // rather than an unbounded spinner while a full-resolution still is written.
+    (vm.exportState as? Exporter.Progress.Running)?.let { running ->
+        val determinate = running.percent in 1..99
+        AlertDialog(
+            onDismissRequest = { },
+            text = {
+                Column {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(vm.exportPhase ?: "Exporting…", style = MaterialTheme.typography.titleSmall)
+                        if (determinate) Text(
+                            "${running.percent}%",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    if (determinate) {
+                        LinearProgressIndicator({ running.percent / 100f }, Modifier.fillMaxWidth())
+                    } else {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                }
+            },
+            confirmButton = {},
+        )
+    }
+    (vm.exportState as? Exporter.Progress.Done)?.let { done ->
+        AlertDialog(
+            onDismissRequest = { vm.clearExportState() },
+            title = { Text("Saved", style = MaterialTheme.typography.titleMedium) },
+            text = { Text("Saved to your gallery.") },
+            confirmButton = { TextButton(onClick = { vm.clearExportState() }) { Text("Done") } },
+            dismissButton = {
+                TextButton(onClick = {
+                    done.uri?.let { u ->
+                        val type = context.contentResolver.getType(u) ?: "image/*"
+                        runCatching {
+                            context.startActivity(
+                                android.content.Intent(android.content.Intent.ACTION_VIEW)
+                                    .setDataAndType(u, type)
+                                    .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            )
+                        }
+                    }
+                    vm.clearExportState()
+                }) { Text("Open gallery") }
+            },
+        )
+    }
+
     vm.pendingVideo?.let {
         AlertDialog(
             onDismissRequest = { vm.cancelPendingVideo() },
