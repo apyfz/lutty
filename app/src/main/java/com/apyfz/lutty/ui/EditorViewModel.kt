@@ -273,18 +273,18 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val list = grade.luts.toMutableList()
         if (targetSlot < list.size) list.removeAt(targetSlot)
         targetSlot = targetSlot.coerceAtMost(maxOf(0, list.size - 1))
-        applyWithLuts(grade.copy(luts = list))
+        applyLuts(list)
     }
 
     fun removeLutById(id: String) {
-        applyWithLuts(grade.copy(luts = grade.luts.filterNot { it.lutId == id }))
+        applyLuts(grade.luts.filterNot { it.lutId == id })
     }
 
     fun deleteLut(id: String) {
         library.delete(id)
         cache.remove(id)
         lutEntries = library.list()
-        applyWithLuts(grade.copy(luts = grade.luts.filterNot { it.lutId == id }))
+        applyLuts(grade.luts.filterNot { it.lutId == id })
         refreshThumbnails()
     }
 
@@ -354,12 +354,26 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val slot = LutSlot(entry.id, entry.name, 1f)
         val list = grade.luts.toMutableList()
         if (targetSlot < list.size) list[targetSlot] = slot else list.add(slot)
-        // Only the base LUT decides the conversion. A single grade has one target, so letting a
-        // stacked second LUT re-point it would break whichever LUT expects the other space.
-        val base = list.getOrNull(0) ?: slot
-        val category = if (base.lutId == entry.id) entry.category else library.categoryOf(base.lutId)
-        val target = if (category == LutCategory.PROCESSED) Profile.PASSTHROUGH else Profile.APPLE_LOG_2
-        applyWithLuts(grade.copy(luts = list.take(2), targetProfile = target.name))
+        applyLuts(list)
+    }
+
+    /**
+     * Applies a new LUT stack and re-points the conversion target at the base (slot 0) LUT's
+     * category. Centralised so every mutation — add, replace, remove, reorder — keeps the target in
+     * step with the base; otherwise removing or reordering a LUT could leave the former category's
+     * conversion in place. With no LUT, the current target is left untouched.
+     */
+    private fun applyLuts(newLuts: List<LutSlot>) {
+        val list = newLuts.take(2)
+        val base = list.firstOrNull()
+        val newGrade = if (base != null) {
+            val target = if (library.categoryOf(base.lutId) == LutCategory.PROCESSED)
+                Profile.PASSTHROUGH else Profile.APPLE_LOG_2
+            grade.copy(luts = list, targetProfile = target.name)
+        } else {
+            grade.copy(luts = list)
+        }
+        applyWithLuts(newGrade)
     }
 
     /** Opens a second slot so the next tile tap layers on top instead of replacing. */
@@ -374,14 +388,14 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun removeLut(index: Int) {
-        applyWithLuts(grade.copy(luts = grade.luts.filterIndexed { i, _ -> i != index }))
+        applyLuts(grade.luts.filterIndexed { i, _ -> i != index })
     }
 
     fun moveLut(from: Int, to: Int) {
         if (to !in grade.luts.indices) return
         val list = grade.luts.toMutableList()
         list.add(to, list.removeAt(from))
-        applyWithLuts(grade.copy(luts = list))
+        applyLuts(list)
     }
 
     fun setStrength(index: Int, value: Float) {
