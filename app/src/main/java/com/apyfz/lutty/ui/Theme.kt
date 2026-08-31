@@ -2,9 +2,15 @@ package com.apyfz.lutty.ui
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MotionScheme
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontVariation
+import androidx.compose.ui.text.font.FontWeight
+import com.apyfz.lutty.R
 
 /**
  * Deliberately monochrome.
@@ -45,10 +51,32 @@ private val Dark = darkColorScheme(
     onError = Color(0xFF40100C),
 )
 
+// Geist (Vercel), a variable font — one file, weights pulled from the wght axis.
+private fun geist(weight: Int) = Font(
+    R.font.geist,
+    weight = FontWeight(weight),
+    variationSettings = FontVariation.Settings(FontVariation.weight(weight)),
+)
+
+private val Geist = FontFamily(geist(400), geist(500), geist(600), geist(700))
+
+/** Material's default type scale, re-pointed at Geist for every style. */
+private val GeistTypography: Typography = Typography().run {
+    fun androidx.compose.ui.text.TextStyle.g() = copy(fontFamily = Geist)
+    copy(
+        displayLarge = displayLarge.g(), displayMedium = displayMedium.g(), displaySmall = displaySmall.g(),
+        headlineLarge = headlineLarge.g(), headlineMedium = headlineMedium.g(), headlineSmall = headlineSmall.g(),
+        titleLarge = titleLarge.g(), titleMedium = titleMedium.g(), titleSmall = titleSmall.g(),
+        bodyLarge = bodyLarge.g(), bodyMedium = bodyMedium.g(), bodySmall = bodySmall.g(),
+        labelLarge = labelLarge.g(), labelMedium = labelMedium.g(), labelSmall = labelSmall.g(),
+    )
+}
+
 @Composable
 fun LutBoxTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = Dark,
+        typography = GeistTypography,
         motionScheme = MotionScheme.expressive(),
         content = content,
     )
