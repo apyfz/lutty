@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import com.apyfz.lutty.color.LutData
+import com.apyfz.lutty.data.LutCategory
 import com.apyfz.lutty.data.LutEntry
 import com.apyfz.lutty.data.LutLibrary
 import com.apyfz.lutty.data.Preset
@@ -309,19 +310,31 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         renderStill()
     }
 
-    fun importLut(uri: Uri, name: String?) {
-        library.import(getApplication(), uri, name)?.let { entry ->
+    /** A picked .cube waiting for the user to say what footage it is built for. */
+    var pendingLutUri by mutableStateOf<Uri?>(null); private set
+
+    fun onLutPicked(uri: Uri) { pendingLutUri = uri }
+    fun cancelLutImport() { pendingLutUri = null }
+
+    fun confirmLutImport(category: LutCategory) {
+        val uri = pendingLutUri ?: return
+        pendingLutUri = null
+        library.import(getApplication(), uri, null, category)?.let { entry ->
             lutEntries = library.list()
             applyLutToSlot(entry)
         }
     }
 
-    /** Puts [entry] in [targetSlot], replacing whatever was there. */
+    /**
+     * Puts [entry] in [targetSlot] and points the conversion at what the LUT expects: LOG LUTs
+     * grade in Apple Log 2, "processed" LUTs apply straight onto already-graded footage.
+     */
     fun applyLutToSlot(entry: LutEntry) {
         val slot = LutSlot(entry.id, entry.name, 1f)
         val list = grade.luts.toMutableList()
         if (targetSlot < list.size) list[targetSlot] = slot else list.add(slot)
-        applyWithLuts(grade.copy(luts = list.take(2)))
+        val target = if (entry.category == LutCategory.PROCESSED) Profile.PASSTHROUGH else Profile.APPLE_LOG_2
+        applyWithLuts(grade.copy(luts = list.take(2), targetProfile = target.name))
     }
 
     /** Opens a second slot so the next tile tap layers on top instead of replacing. */
