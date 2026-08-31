@@ -79,4 +79,65 @@ print("  in Apple Wide Gamut    :", awg2)
 print("  Apple Log 2 code       :", mine_enc(awg2))
 check("neutral preserved through chain", awg2, [0.18,0.18,0.18], 1e-9)
 print("\nBT.2020 -> Apple Wide Gamut matrix:\n", M_2020_AWG)
+print("\n=== 7. RED Log3G10 v3 curve: mine vs colour-science ===")
+# RED "White Paper on REDWideGamutRGB and Log3G10" (2017); .R3D / IPP2 log curve.
+g10a, g10b, g10c, g10g = 0.224282, 155.975327, 0.01, 15.1927
+def g10_enc(x):
+    x = np.asarray(x, float) + g10c
+    return np.where(x < 0.0, x*g10g, g10a*np.log10(x*g10b + 1.0))
+def g10_dec(y):
+    y = np.asarray(y, float)
+    return np.where(y < 0.0, y/g10g - g10c, (10.0**(y/g10a) - 1.0)/g10b - g10c)
+xs = np.concatenate([np.linspace(-0.02, 0.02, 40), np.logspace(-2, 1.2, 60)])
+check("Log3G10 v3 encode vs colour-science", g10_enc(xs), colour.models.log_encoding_Log3G10(xs, method='v3'), 1e-9)
+ps = np.linspace(0.0, 1.0, 200)
+check("Log3G10 v3 decode vs colour-science", g10_dec(ps), colour.models.log_decoding_Log3G10(ps, method='v3'), 1e-9)
+
+print("\n=== 8. Nikon N-Log curve: mine vs colour-science ===")
+# Nikon "N-Log Specification Document" v1.0; reflection input, normalised code-value output.
+n_cut1, n_cut2 = 0.328, 0.4418377321603128
+n_a, n_b, n_c, n_d = 0.635386119257087, 0.0075, 0.1466275659824047, 0.6050830889540567
+def nlog_enc(y):
+    y = np.asarray(y, float)
+    return np.where(y < n_cut1, n_a*np.cbrt(y + n_b), n_c*np.log(np.maximum(y, 1e-30)) + n_d)
+def nlog_dec(x):
+    x = np.asarray(x, float)
+    return np.where(x < n_cut2, (x/n_a)**3 - n_b, np.exp((x - n_d)/n_c))
+ys = np.logspace(-3, 1.2, 120)
+check("N-Log encode vs colour-science", nlog_enc(ys), colour.models.log_encoding_NLog(ys), 1e-9)
+check("N-Log decode vs colour-science", nlog_dec(ps), colour.models.log_decoding_NLog(ps), 1e-9)
+
+print("\n=== 9. REDWideGamutRGB -> Apple Wide Gamut, computed like section 5, vs repo constant ===")
+M_AP0_AWG = np.linalg.inv(M_AWG_AP0)
+M_RED_2065 = colour.matrix_RGB_to_RGB(colour.RGB_COLOURSPACES['REDWideGamutRGB'],
+                                      colour.RGB_COLOURSPACES['ACES2065-1'],
+                                      chromatic_adaptation_transform='Bradford')
+M_RED_AWG = M_AP0_AWG @ M_RED_2065
+repo_red = np.array([[ 1.1455528684, -0.2293505398, 0.0837960327],
+                     [-0.0333742668,  1.0799487937, -0.0465739624],
+                     [-0.0471347145, -0.2743408983, 1.3214758140]])
+print("colour-science:\n", M_RED_AWG)
+check("REDWideGamut->AWG vs repo constant", repo_red, M_RED_AWG, 5e-6)
+check("REDWideGamut->AWG row sums ~ 1", M_RED_AWG.sum(axis=1), [1, 1, 1], 5e-6)
+print("  N-Gamut primaries == BT.2020?",
+      np.allclose(colour.RGB_COLOURSPACES['N-Gamut'].primaries,
+                  colour.RGB_COLOURSPACES['ITU-R BT.2020'].primaries))
+
+print("\n=== 10. Fujifilm F-Log2 curve: mine vs colour-science ===")
+# Fujifilm "F-Log2 Data Sheet" (2022); reflection input, normalised code-value output.
+f2_cut1, f2_cut2 = 0.000889, 0.100686685370811
+f2_a, f2_b, f2_c, f2_d, f2_e, f2_f = 5.555556, 0.064829, 0.245281, 0.384316, 8.799461, 0.092864
+def f2_enc(r):
+    r = np.asarray(r, float)
+    return np.where(r < f2_cut1, f2_e*r + f2_f, f2_c*np.log10(f2_a*r + f2_b) + f2_d)
+def f2_dec(p):
+    p = np.asarray(p, float)
+    return np.where(p < f2_cut2, (p - f2_f)/f2_e, (10**((p - f2_d)/f2_c) - f2_b)/f2_a)
+rs = np.logspace(-3, 1.2, 120)
+check("F-Log2 encode vs colour-science", f2_enc(rs), colour.models.log_encoding_FLog2(rs), 1e-9)
+check("F-Log2 decode vs colour-science", f2_dec(ps), colour.models.log_decoding_FLog2(ps), 1e-9)
+print("  F-Gamut primaries == BT.2020?",
+      np.allclose(colour.RGB_COLOURSPACES['F-Gamut'].primaries,
+                  colour.RGB_COLOURSPACES['ITU-R BT.2020'].primaries))
+
 print("\n" + ("ALL CHECKS PASSED" if not FAIL else "FAILURES: "+", ".join(FAIL)))

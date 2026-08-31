@@ -1,5 +1,6 @@
 package com.apyfz.lutty.color
 
+import com.apyfz.lutty.model.Gamut
 import com.apyfz.lutty.model.GradeState
 import com.apyfz.lutty.model.Profile
 import java.util.Locale
@@ -14,6 +15,20 @@ import kotlin.math.pow
  */
 object GradePipeline {
 
+    /**
+     * Row-major 3x3 to convert the source's linear primaries into the target's, or null when no
+     * conversion is needed. Only conversions toward Apple Wide Gamut (i.e. an Apple Log 2 target)
+     * are implemented; every other target shares the source's primaries or is left as shot.
+     */
+    fun gamutMatrixToTarget(input: Profile, target: Profile): DoubleArray? {
+        if (target != Profile.APPLE_LOG_2) return null
+        return when (input.gamut) {
+            Gamut.BT2020 -> ColorProfiles.BT2020_TO_APPLE_WIDE_GAMUT
+            Gamut.RED_WIDE -> ColorProfiles.RED_WIDE_GAMUT_TO_APPLE_WIDE_GAMUT
+            Gamut.APPLE_WIDE, Gamut.NONE -> null
+        }
+    }
+
     fun apply(grade: GradeState, luts: List<LutData>, rgb: FloatArray): FloatArray {
         // 1. to scene linear
         var lin = decodeToLinear(rgb, grade.input)
@@ -23,11 +38,10 @@ object GradePipeline {
         val wb = grade.whiteBalanceGain()
         lin = FloatArray(3) { lin[it] * gain * wb[it] }
 
-        // 3. gamut. Only Apple Log 2 uses Apple Wide Gamut; everything else here is on BT.2020
-        // primaries. Apple Log 2 is always the conversion target, so the reverse direction is
-        // deliberately not implemented.
-        if (grade.input != Profile.APPLE_LOG_2 && grade.target == Profile.APPLE_LOG_2) {
-            val m = ColorProfiles.BT2020_TO_APPLE_WIDE_GAMUT
+        // 3. gamut. Apple Log 2 is always the conversion target, and it is the only profile on
+        // Apple Wide Gamut, so a matrix is needed exactly when the source sits on other primaries.
+        // The reverse direction (Apple Wide Gamut back to a source gamut) is deliberately not built.
+        gamutMatrixToTarget(grade.input, grade.target)?.let { m ->
             val r = m[0] * lin[0] + m[1] * lin[1] + m[2] * lin[2]
             val g = m[3] * lin[0] + m[4] * lin[1] + m[5] * lin[2]
             val b = m[6] * lin[0] + m[7] * lin[1] + m[8] * lin[2]
@@ -59,14 +73,21 @@ object GradePipeline {
         Profile.O_LOG -> FloatArray(3) { ColorProfiles.oLogDecode(c[it].toDouble()).toFloat() }
         Profile.APPLE_LOG, Profile.APPLE_LOG_2 ->
             FloatArray(3) { ColorProfiles.appleLogDecode(c[it].toDouble()).toFloat() }
-        Profile.PASSTHROUGH -> c.copyOf()
+        Profile.RED_LOG3G10 -> FloatArray(3) { ColorProfiles.log3g10Decode(c[it].toDouble()).toFloat() }
+        Profile.NIKON_N_LOG -> FloatArray(3) { ColorProfiles.nLogDecode(c[it].toDouble()).toFloat() }
+        Profile.FUJI_F_LOG2 -> FloatArray(3) { ColorProfiles.fLog2Decode(c[it].toDouble()).toFloat() }
+        // Already scene-linear from the raw developer; nothing to decode.
+        Profile.RAW_LINEAR, Profile.PASSTHROUGH -> c.copyOf()
     }
 
     private fun encodeFromLinear(l: FloatArray, profile: Profile): FloatArray = when (profile) {
         Profile.O_LOG -> FloatArray(3) { ColorProfiles.oLogEncode(l[it].toDouble()).toFloat() }
         Profile.APPLE_LOG, Profile.APPLE_LOG_2 ->
             FloatArray(3) { ColorProfiles.appleLogEncode(l[it].toDouble()).toFloat() }
-        Profile.PASSTHROUGH -> l.copyOf()
+        Profile.RED_LOG3G10 -> FloatArray(3) { ColorProfiles.log3g10Encode(l[it].toDouble()).toFloat() }
+        Profile.NIKON_N_LOG -> FloatArray(3) { ColorProfiles.nLogEncode(l[it].toDouble()).toFloat() }
+        Profile.FUJI_F_LOG2 -> FloatArray(3) { ColorProfiles.fLog2Encode(l[it].toDouble()).toFloat() }
+        Profile.RAW_LINEAR, Profile.PASSTHROUGH -> l.copyOf()
     }
 
     /**

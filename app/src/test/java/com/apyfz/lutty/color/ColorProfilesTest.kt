@@ -67,4 +67,66 @@ class ColorProfilesTest {
         val out = ColorProfiles.oLogToAppleLog(doubleArrayOf(grey, grey, grey))
         for (k in 0..2) assertEquals(0.4882724585268676, out[k], 1e-9)
     }
+
+    @Test fun `red log3g10 v3 matches colour-science`() {
+        assertEquals(0.3333329120259919, ColorProfiles.log3g10Encode(0.18), 1e-12)
+        assertEquals(0.0915514877147452, ColorProfiles.log3g10Encode(0.0), 1e-12)
+        assertEquals(0.4934485197706815, ColorProfiles.log3g10Encode(1.0), 1e-12)
+    }
+
+    @Test fun `red log3g10 round trips`() {
+        for (r in listOf(0.0, 0.18, 0.39, 1.0, 16.0)) {
+            assertEquals(r, ColorProfiles.log3g10Decode(ColorProfiles.log3g10Encode(r)), 1e-9)
+        }
+    }
+
+    @Test fun `nikon n-log matches colour-science`() {
+        assertEquals(0.3636677701171387, ColorProfiles.nLogEncode(0.18), 1e-12)
+        assertEquals(0.1243726278963715, ColorProfiles.nLogEncode(0.0), 1e-12)
+        assertEquals(0.6050830889540567, ColorProfiles.nLogEncode(1.0), 1e-12)
+    }
+
+    @Test fun `nikon n-log round trips`() {
+        for (r in listOf(0.0, 0.18, 0.39, 1.0, 8.0)) {
+            assertEquals(r, ColorProfiles.nLogDecode(ColorProfiles.nLogEncode(r)), 1e-9)
+        }
+    }
+
+    @Test fun `red wide gamut to apple wide gamut preserves neutrals`() {
+        val m = ColorProfiles.RED_WIDE_GAMUT_TO_APPLE_WIDE_GAMUT
+        for (row in 0..2) {
+            val sum = m[row * 3] + m[row * 3 + 1] + m[row * 3 + 2]
+            assertEquals("row $row sums to $sum", 1.0, sum, 5e-6)
+        }
+    }
+
+    @Test fun `18 percent grey stays neutral through red log3g10 to apple log 2`() {
+        val grey = ColorProfiles.log3g10Encode(0.18)
+        val out = ColorProfiles.redLog3G10ToAppleLog2(doubleArrayOf(grey, grey, grey))
+        for (k in 0..2) assertEquals(0.4882724585268676, out[k], 1e-6)
+    }
+
+    @Test fun `18 percent grey stays neutral through n-log to apple log 2`() {
+        val grey = ColorProfiles.nLogEncode(0.18)
+        val out = ColorProfiles.nLogToAppleLog2(doubleArrayOf(grey, grey, grey))
+        for (k in 0..2) assertEquals(0.4882724585268676, out[k], 1e-9)
+    }
+
+    @Test fun `fujifilm f-log2 matches colour-science`() {
+        assertEquals(0.39100724189123004, ColorProfiles.fLog2Encode(0.18), 1e-12)
+        assertEquals(0.092864, ColorProfiles.fLog2Encode(0.0), 1e-12)
+        assertEquals(0.5682193704444426, ColorProfiles.fLog2Encode(1.0), 1e-12)
+    }
+
+    @Test fun `fujifilm f-log2 round trips`() {
+        for (r in listOf(0.0, 0.18, 0.39, 1.0, 8.0)) {
+            assertEquals(r, ColorProfiles.fLog2Decode(ColorProfiles.fLog2Encode(r)), 1e-9)
+        }
+    }
+
+    @Test fun `18 percent grey stays neutral through f-log2 to apple log 2`() {
+        val grey = ColorProfiles.fLog2Encode(0.18)
+        val out = ColorProfiles.fLog2ToAppleLog2(doubleArrayOf(grey, grey, grey))
+        for (k in 0..2) assertEquals(0.4882724585268676, out[k], 1e-9)
+    }
 }

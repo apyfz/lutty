@@ -13,6 +13,7 @@ import com.apyfz.lutty.data.Preset
 import com.apyfz.lutty.data.PresetStore
 import com.apyfz.lutty.export.Exporter
 import com.apyfz.lutty.gl.GradeController
+import com.apyfz.lutty.gl.StillGlRenderer
 import android.content.ContentValues
 import android.graphics.Bitmap
 import android.os.Environment
@@ -21,6 +22,8 @@ import android.util.Log
 import com.apyfz.lutty.color.GradePipeline
 import com.apyfz.lutty.media.LutSwatch
 import com.apyfz.lutty.media.ProfileDetector
+import com.apyfz.lutty.media.RawDecoder
+import com.apyfz.lutty.media.StillEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
@@ -38,6 +41,18 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private val exporter = Exporter(app)
 
     var videoUri by mutableStateOf<Uri?>(null); private set
+    // Raw stills path. When [stillImage] is set the editor shows a graded bitmap instead of the
+    // player; the full-resolution [stillFull] is kept only for export.
+    var stillImage by mutableStateOf<Bitmap?>(null); private set
+    var loadingRaw by mutableStateOf(false); private set
+    var stillRendering by mutableStateOf(false); private set
+    var rawError by mutableStateOf<String?>(null); private set
+    private var stillPreview: StillEngine.LinearImage? = null
+    // A small develop backs the fast interactive preview; export re-develops from [stillRawUri] at
+    // full resolution and renders it in strips, so the saved image keeps the sensor's resolution.
+    private var stillSource: RawDecoder.Linear? = null
+    private var stillRawUri: Uri? = null
+    private var stillRenderJob: Job? = null
     var grade by mutableStateOf(GradeState.NEUTRAL); private set
     var lutEntries by mutableStateOf(library.list()); private set
     var presets by mutableStateOf(presetStore.list()); private set
@@ -85,6 +100,68 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             pendingVideo = uri
         } else {
             loadVideo(uri, keepGrade = false)
+        }
+    }
+
+    private val rawExtensions =
+        listOf(".dng", ".nef", ".cr2", ".cr3", ".arw", ".raf", ".rw2", ".orf", ".pef", ".srw", ".raw")
+
+    /** Picker entry that decides between the video path and the raw-still path by file type. */
+    fun openFile(uri: Uri) {
+        val resolver = getApplication<Application>().contentResolver
+        val mime = resolver.getType(uri).orEmpty().lowercase()
+        val name = (uri.lastPathSegment ?: "").lowercase()
+        val isRaw = mime.contains("dng") || mime.contains("x-adobe") ||
+            rawExtensions.any { name.endsWith(it) }
+        if (isRaw) loadRaw(uri) else setVideo(uri)
+    }
+
+    /** Develops a raw stills file to linear and shows it as a graded still. */
+    private fun loadRaw(uri: Uri) {
+        loadingRaw = true
+        rawError = null
+        viewModelScope.launch {
+            val developed = withContext(Dispatchers.IO) {
+                RawDecoder.develop(getApplication(), uri, PREVIEW_EDGE)
+            }
+            if (developed == null) {
+                loadingRaw = false
+                rawError = "Could not develop this raw file"
+                return@launch
+            }
+            // Leaving the video path: release any player-bound state so the still owns the surface.
+            videoUri = null
+            detection = null
+            stillSource = developed
+            stillRawUri = uri
+            stillPreview = withContext(Dispatchers.Default) { StillEngine.fromRaw(developed, PREVIEW_EDGE) }
+            cache.clear()
+            // Raw is scene-linear BT.2020; default to encoding into Apple Log 2 for the LUT library.
+            apply(GradeState.NEUTRAL.copy(
+                inputProfile = Profile.RAW_LINEAR.name,
+                targetProfile = Profile.APPLE_LOG_2.name,
+            ))
+            loadingRaw = false
+            renderStill()
+            refreshThumbnails()
+        }
+    }
+
+    /** Re-renders the on-screen still from the current grade. No-op when no still is loaded. */
+    private fun renderStill() {
+        val preview = stillPreview ?: return
+        stillRenderJob?.cancel()
+        stillRendering = true
+        stillRenderJob = viewModelScope.launch {
+            val bmp = withContext(Dispatchers.Default) {
+                // GPU path: one draw of the same shader as video. CPU is a last-resort fallback for
+                // a device without a working GL context (it is far slower with a LUT applied).
+                StillGlRenderer.render(preview, grade, resolvedLuts())
+                    ?: StillEngine.render(preview, grade, resolvedLuts())
+            }
+            ensureActive()
+            stillImage = bmp
+            stillRendering = false
         }
     }
 
@@ -219,6 +296,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         grade = newGrade
         controller.updateGrade(newGrade)
         if (targetChanged) refreshThumbnails()
+        renderStill()
     }
 
     /** LUT set changed, so textures must be rebuilt. */
@@ -226,6 +304,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         grade = newGrade
         controller.updateLuts(newGrade, resolvedLuts())
         refreshThumbnails()
+        renderStill()
     }
 
     fun importLut(uri: Uri, name: String?) {
@@ -299,12 +378,58 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun export() {
+        if (stillSource != null) { exportStill(); return }
         val uri = videoUri ?: return
         exportState = Exporter.Progress.Running(0)
         exporter.start(uri, grade, resolvedLuts()) { exportState = it }
     }
 
+    /** Re-develops the raw at full resolution and renders it in strips on the GPU, then saves a
+     *  JPEG. Striped rendering keeps memory bounded so the export keeps the sensor's resolution. */
+    private fun exportStill() {
+        val uri = stillRawUri ?: return
+        exportState = Exporter.Progress.Running(0)
+        viewModelScope.launch {
+            val saved = withContext(Dispatchers.Default) {
+                val full = RawDecoder.develop(getApplication(), uri) ?: return@withContext null
+                val bmp = StillGlRenderer.renderTiled(full, grade, resolvedLuts())
+                    ?: return@withContext null
+                saveBitmapToGallery(bmp)
+            }
+            exportState =
+                if (saved != null) Exporter.Progress.Done(saved, 0, 0)
+                else Exporter.Progress.Failed("Could not save the image")
+        }
+    }
+
+    private fun saveBitmapToGallery(bmp: Bitmap): Uri? = try {
+        val resolver = getApplication<Application>().contentResolver
+        val name = "Lutty_${System.currentTimeMillis()}.jpg"
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, name)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Lutty")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+        if (uri == null) null else {
+            resolver.openOutputStream(uri)?.use { bmp.compress(Bitmap.CompressFormat.JPEG, 95, it) }
+            values.clear(); values.put(MediaStore.Images.Media.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+            uri
+        }
+    } catch (e: Exception) {
+        Log.e("LuttyExport", "could not save image", e); null
+    }
+
     fun clearExportState() { exportState = null }
+
+    companion object {
+        /** Long-edge cap for the interactive still preview; export re-renders at full resolution.
+         *  The GPU renders comfortably at this size; the cost that remains is the pixel read-back. */
+        // Preview develop resolution; export re-develops at full resolution and renders in strips.
+        private const val PREVIEW_EDGE = 2048
+    }
 
     var bypassActive by mutableStateOf(false); private set
 

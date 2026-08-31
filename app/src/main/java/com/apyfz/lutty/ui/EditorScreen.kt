@@ -58,9 +58,18 @@ private enum class Tool(val label: String, val icon: ImageVector) {
 fun EditorScreen(vm: EditorViewModel) {
     val context = LocalContext.current
 
+    // Gallery photo picker: the fast default for clips that live in the camera roll.
     val pickVideo = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri -> uri?.let { vm.setVideo(it) } }
+
+    // System file browser, reached via the folder button. The gallery only lists MediaStore-indexed
+    // clips, so camera-raw formats sitting in a plain folder are invisible there. "*/*" is needed
+    // because raw stills (DNG) and RED .R3D carry no recognised video MIME type. openFile() sniffs
+    // the type and routes raw stills to the developer and everything else to the video path.
+    val pickVideoFile = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let { vm.openFile(it) } }
 
     val pickLut = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -145,22 +154,53 @@ fun EditorScreen(vm: EditorViewModel) {
                         )
                     },
                 )
+            } else if (vm.stillImage != null) {
+                Image(
+                    bitmap = vm.stillImage!!.asImageBitmap(),
+                    contentDescription = "Graded still",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else if (vm.loadingRaw || vm.stillRendering) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        if (vm.loadingRaw) "Developing raw…" else "Rendering…",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
             } else {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Lutty", style = MaterialTheme.typography.headlineMedium, color = Color.White)
-                    Spacer(Modifier.height(16.dp))
-                    Button(onClick = {
-                        pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
-                    }) { Text("Choose a clip") }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(onClick = {
+                            pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+                        }) { Text("Choose a clip") }
+                        OutlinedButton(onClick = { pickVideoFile.launch(arrayOf("*/*")) }) {
+                            Icon(Icons.Default.FolderOpen, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Browse")
+                        }
+                    }
+                    vm.rawError?.let {
+                        Spacer(Modifier.height(10.dp))
+                        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+                    }
                 }
             }
 
-            FilledTonalIconButton(
-                onClick = {
+            Row(
+                Modifier.align(Alignment.TopStart).padding(start = 12.dp, top = 44.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilledTonalIconButton(onClick = {
                     pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
-                },
-                modifier = Modifier.align(Alignment.TopStart).padding(start = 12.dp, top = 44.dp),
-            ) { Icon(Icons.Default.VideoLibrary, "Choose a clip") }
+                }) { Icon(Icons.Default.VideoLibrary, "Choose a clip from the gallery") }
+                FilledTonalIconButton(onClick = {
+                    pickVideoFile.launch(arrayOf("*/*"))
+                }) { Icon(Icons.Default.FolderOpen, "Browse files for a clip") }
+            }
 
             ExportButton(vm, Modifier.align(Alignment.TopEnd).padding(end = 12.dp, top = 44.dp))
 
@@ -672,7 +712,8 @@ private fun ExportButton(vm: EditorViewModel, modifier: Modifier = Modifier) {
             }
         }
         null -> FilledTonalIconButton(
-            onClick = { vm.export() }, modifier = modifier, enabled = vm.videoUri != null,
+            onClick = { vm.export() }, modifier = modifier,
+            enabled = vm.videoUri != null || vm.stillImage != null,
         ) { Icon(Icons.Default.Download, "Export full resolution") }
     }
 }

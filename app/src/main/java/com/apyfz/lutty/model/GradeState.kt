@@ -2,12 +2,25 @@ package com.apyfz.lutty.model
 
 import kotlinx.serialization.Serializable
 
+/** The primaries a profile's linear light sits on. Drives the gamut matrix before the LUT stack. */
+enum class Gamut { NONE, BT2020, RED_WIDE, APPLE_WIDE }
+
 /** Which curve/gamut a clip is in, and which one the LUT stack expects. */
-enum class Profile(val shaderId: Int, val label: String) {
-    PASSTHROUGH(0, "As shot (no conversion)"),
-    O_LOG(1, "OPPO O-Log"),
-    APPLE_LOG(2, "Apple Log"),
-    APPLE_LOG_2(3, "Apple Log 2"),
+enum class Profile(val shaderId: Int, val label: String, val gamut: Gamut) {
+    PASSTHROUGH(0, "As shot (no conversion)", Gamut.NONE),
+    O_LOG(1, "OPPO O-Log", Gamut.BT2020),
+    APPLE_LOG(2, "Apple Log", Gamut.BT2020),
+    APPLE_LOG_2(3, "Apple Log 2", Gamut.APPLE_WIDE),
+    RED_LOG3G10(4, "RED Log3G10", Gamut.RED_WIDE),
+    NIKON_N_LOG(5, "Nikon N-Log", Gamut.BT2020),
+    FUJI_F_LOG2(6, "Fujifilm F-Log2", Gamut.BT2020),
+
+    /**
+     * Scene-linear light in BT.2020 primaries, as developed from a raw stills file (DNG) by
+     * LibRaw. There is no transfer curve to undo, so decoding is the identity; it exists so a raw
+     * photo can be encoded into any log curve and graded with the same LUT stack as video.
+     */
+    RAW_LINEAR(7, "Raw (linear)", Gamut.BT2020),
 }
 
 @Serializable

@@ -8,12 +8,24 @@ android {
     namespace = "com.apyfz.lutty"
     compileSdk = 37
 
+    ndkVersion = "27.2.12479018"
+
     defaultConfig {
         applicationId = "com.apyfz.lutty"
         minSdk = 31
         targetSdk = 37
         versionCode = 1
         versionName = "1.0"
+
+        ndk { abiFilters += "arm64-v8a" }   // the target device; LibRaw is built for arm64 only
+        externalNativeBuild { cmake { cppFlags += "-std=c++17" } }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {
